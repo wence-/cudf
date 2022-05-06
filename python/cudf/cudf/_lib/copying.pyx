@@ -723,10 +723,7 @@ cdef class _CPackedColumns:
         column_dtypes = {}
         for name, dtype in self.column_dtypes.items():
             dtype_header, dtype_frames = dtype.serialize()
-            column_dtypes[name] = (
-                dtype_header,
-                (len(frames), len(frames) + len(dtype_frames)),
-            )
+            column_dtypes[name] = dtype_header
             frames.extend(dtype_frames)
         header["column-dtypes"] = column_dtypes
 
@@ -736,7 +733,12 @@ cdef class _CPackedColumns:
     def deserialize(header, frames):
         cdef _CPackedColumns p = _CPackedColumns.__new__(_CPackedColumns)
 
-        gpu_data = Buffer.deserialize(header["data"], frames)
+        def unpack(header, frames):
+            klass = pickle.loads(header["type-serialized"])
+            count = header["frame_count"]
+            return klass.deserialize(header, frames[:count]), frames[count:]
+
+        gpu_data, frames = unpack(header["data"], frames)
 
         dbuf = DeviceBuffer(
             ptr=gpu_data.ptr,
@@ -757,10 +759,7 @@ cdef class _CPackedColumns:
 
         column_dtypes = {}
         for name, dtype in header["column-dtypes"].items():
-            dtype_header, (start, stop) = dtype
-            column_dtypes[name] = pickle.loads(
-                dtype_header["type-serialized"]
-            ).deserialize(dtype_header, frames[start:stop])
+            column_dtypes[name], frames = unpack(dtype, frames)
         p.column_dtypes = column_dtypes
 
         return p
