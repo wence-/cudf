@@ -127,6 +127,7 @@ class Frame(BinaryOperand, Scannable):
             "column_names": pickle.dumps(tuple(self._data.names)),
         }
         header["columns"], frames = serialize_columns(self._columns)
+        header["frame_count"] = len(frames)
         return header, frames
 
     @classmethod

@@ -561,7 +561,6 @@ class Series(SingleColumnFrame, IndexedFrame, Serializable):
         header, frames = super().serialize()
 
         header["index"], index_frames = self._index.serialize()
-        header["index_frame_count"] = len(index_frames)
         # For backwards compatibility with older versions of cuDF, index
         # columns are placed before data columns.
         frames = index_frames + frames
@@ -571,13 +570,12 @@ class Series(SingleColumnFrame, IndexedFrame, Serializable):
     @classmethod
     @_cudf_nvtx_annotate
     def deserialize(cls, header, frames):
-        index_nframes = header["index_frame_count"]
-        obj = super().deserialize(
-            header, frames[header["index_frame_count"] :]
-        )
+        index_header = header["index"]
+        index_nframes = index_header["frame_count"]
+        obj = super().deserialize(header, frames[index_nframes:])
 
-        idx_typ = pickle.loads(header["index"]["type-serialized"])
-        index = idx_typ.deserialize(header["index"], frames[:index_nframes])
+        idx_typ = pickle.loads(index_header["type-serialized"])
+        index = idx_typ.deserialize(index_header, frames[:index_nframes])
         obj._index = index
 
         return obj

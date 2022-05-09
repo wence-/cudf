@@ -929,19 +929,17 @@ class DataFrame(IndexedFrame, Serializable, GetAttrGetItemMixin):
         header, frames = super().serialize()
 
         header["index"], index_frames = self._index.serialize()
-        header["index_frame_count"] = len(index_frames)
         # For backwards compatibility with older versions of cuDF, index
         # columns are placed before data columns.
         frames = index_frames + frames
-
+        header["frame_count"] = len(frames)
         return header, frames
 
     @classmethod
     def deserialize(cls, header, frames):
-        index_nframes = header["index_frame_count"]
-        obj = super().deserialize(
-            header, frames[header["index_frame_count"] :]
-        )
+        index = header["index"]
+        index_nframes = index["frame_count"]
+        obj = super().deserialize(header, frames[index_nframes:])
 
         idx_typ = pickle.loads(header["index"]["type-serialized"])
         index = idx_typ.deserialize(header["index"], frames[:index_nframes])

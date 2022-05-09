@@ -416,13 +416,10 @@ class GroupBy(Serializable, Reducible, Scannable):
 
         obj_header, obj_frames = self.obj.serialize()
         header["obj"] = obj_header
-        header["obj_type"] = pickle.dumps(type(self.obj))
-        header["num_obj_frames"] = len(obj_frames)
         frames.extend(obj_frames)
 
         grouping_header, grouping_frames = self.grouping.serialize()
         header["grouping"] = grouping_header
-        header["num_grouping_frames"] = len(grouping_frames)
         frames.extend(grouping_frames)
 
         return header, frames
@@ -431,12 +428,13 @@ class GroupBy(Serializable, Reducible, Scannable):
     def deserialize(cls, header, frames):
         kwargs = header["kwargs"]
 
-        obj_type = pickle.loads(header["obj_type"])
+        obj_header = header["obj"]
+        obj_type = pickle.loads(obj_header["type-serialized"])
         obj = obj_type.deserialize(
-            header["obj"], frames[: header["num_obj_frames"]]
+            header["obj"], frames[: obj_header["frame_count"]]
         )
         grouping = _Grouping.deserialize(
-            header["grouping"], frames[header["num_obj_frames"] :]
+            header["grouping"], frames[obj_header["frame_count"] :]
         )
         return cls(obj, grouping, **kwargs)
 
@@ -1757,6 +1755,7 @@ class _Grouping(Serializable):
         )
         header["columns"] = column_header
         frames.extend(column_frames)
+        header["frame_count"] = len(frames)
         return header, frames
 
     @classmethod
