@@ -1,4 +1,4 @@
-# Copyright (c) 2021-2022, NVIDIA CORPORATION.
+# Copyright (c) 2021-2023, NVIDIA CORPORATION.
 
 import contextlib
 
@@ -311,13 +311,7 @@ def test_groupby_dropna_cudf(dropna, by):
                 "categorical columns"
             ),
         ),
-        pytest.param(
-            False,
-            ["a", "b"],
-            marks=pytest.mark.xfail(
-                reason="https://github.com/dask/dask/issues/8817"
-            ),
-        ),
+        (False, ["a", "b"]),
         pytest.param(
             False,
             ["a", "c"],
@@ -810,7 +804,7 @@ def test_groupby_nested_dict(func):
         lambda df: df.groupby(["x", "y"]).min(),
         pytest.param(
             lambda df: df.groupby(["x", "y"]).agg("min"),
-            marks=pytest.mark.skip(
+            marks=pytest.mark.xfail(
                 reason="https://github.com/dask/dask/issues/9093"
             ),
         ),

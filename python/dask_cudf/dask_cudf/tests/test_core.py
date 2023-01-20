@@ -219,7 +219,6 @@ def test_set_index_2(nelem):
         assert_frame_equal_by_index_group(expect, got)
 
 
-@pytest.mark.xfail(reason="dask's index name '__dask_cudf.index' is correct")
 def test_set_index_w_series():
     with dask.config.set(scheduler="single-threaded"):
         nelem = 20
@@ -385,16 +384,13 @@ def test_repr(func):
         assert gddf._repr_html_()
 
 
-@pytest.mark.skip(reason="datetime indexes not fully supported in cudf")
 @pytest.mark.parametrize("start", ["1d", "5d", "1w", "12h"])
 @pytest.mark.parametrize("stop", ["1d", "3d", "8h"])
 def test_repartition_timeseries(start, stop):
-    # This test is currently absurdly slow.  It should not be unskipped without
-    # slimming it down.
     pdf = dask.datasets.timeseries(
         "2000-01-01",
         "2000-01-31",
-        freq="1s",
+        freq="1d",
         partition_freq=start,
         dtypes={"x": int, "y": float},
     )
@@ -544,16 +540,6 @@ def gddf(gdf):
 def test_unary_ops(func, gdf, gddf):
     p = func(gdf)
     g = func(gddf)
-
-    # Fixed in https://github.com/dask/dask/pull/4657
-    if isinstance(p, cudf.Index):
-        from packaging import version
-
-        if version.parse(dask.__version__) < version.parse("1.1.6"):
-            pytest.skip(
-                "dask.dataframe assert_eq index check hardcoded to "
-                "pandas prior to 1.1.6 release"
-            )
 
     dd.assert_eq(p, g, check_names=False)
 
@@ -818,15 +804,6 @@ def test_index_map_partitions():
 
 
 def test_merging_categorical_columns():
-    try:
-        from dask.dataframe.dispatch import (  # noqa: F401
-            union_categoricals_dispatch,
-        )
-    except ImportError:
-        pytest.skip(
-            "need a version of dask that has union_categoricals_dispatch"
-        )
-
     df_1 = cudf.DataFrame(
         {"id_1": [0, 1, 2, 3], "cat_col": ["a", "b", "f", "f"]}
     )
@@ -858,11 +835,6 @@ def test_merging_categorical_columns():
 
 
 def test_correct_meta():
-    try:
-        from dask.dataframe.dispatch import make_meta_obj  # noqa: F401
-    except ImportError:
-        pytest.skip("need make_meta_obj to be preset")
-
     # Need these local imports in this specific order.
     # For context: https://github.com/rapidsai/cudf/issues/7946
     import pandas as pd
