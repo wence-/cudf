@@ -312,10 +312,10 @@ def _get_shuffle_type(shuffle):
     # and to validate user-specified options.
     # The only supported options is currently "tasks"
     shuffle = shuffle or dask.config.get("shuffle", "tasks")
-    if shuffle != "tasks":
+    if shuffle not in {"tasks", "p2p"}:
         raise ValueError(
-            f"Dask-cudf only supports in-memory shuffling with "
-            f"'tasks'. Got shuffle={shuffle}"
+            "Dask-cudf only supports shuffling with 'tasks' or 'p2p'. "
+            f"Got {shuffle=}"
         )
 
     return shuffle
