@@ -14,7 +14,7 @@ import cupy as cp
 import numpy as np
 import pandas as pd
 from pandas._config import get_option
-from typing_extensions import Self, assert_never
+from typing_extensions import Self
 
 import cudf
 from cudf import _lib as libcudf
@@ -992,32 +992,16 @@ class MultiIndex(Frame, BaseIndex, NotIterable):
         this function. They are usually constructed by calling
         :func:~.indexing_utils.normalize_row_iloc_indexer`.
         """
-        frame = self.to_frame(index=False)
+        frame = self.to_frame(index=False)._get_structured_iloc(spec, args)
 
-        # TODO: Move to dataframe
-        def index_frame(frame: cudf.DataFrame):
-            if spec is indexing_utils.Indexer.SLICE:
-                return frame._slice(slice(*args))
-            elif spec is indexing_utils.Indexer.INDICES:
-                return frame._gather(
-                    args, keep_index=False, check_bounds=False
-                )
-            elif spec is indexing_utils.Indexer.MASK:
-                return frame._apply_boolean_mask(args)
-            elif spec is indexing_utils.Indexer.SCALAR:
-                # TODO: use unchecked API
-                return frame.take(args)
-            else:
-                assert_never(spec)
-
-        result = MultiIndex.from_frame(index_frame(frame))
+        result = MultiIndex.from_frame(frame)
 
         # we are indexing into a single row of the MultiIndex,
         # return that row as a tuple:
         if spec == indexing_utils.Indexer.SCALAR:
             return result.to_pandas()[0]
         if self._codes is not None:
-            result._codes = index_frame(self._codes)
+            result._codes = self._codes._get_structured_iloc(spec, args)
         if self._levels is not None:
             result._levels = self._levels
         result.names = self.names
