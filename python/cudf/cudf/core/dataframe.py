@@ -1387,7 +1387,8 @@ class DataFrame(IndexedFrame, Serializable, GetAttrGetItemMixin):
             return self._gather(
                 cudf.core.column.arange(
                     start, stop=stop, step=stride, dtype=np.int32
-                )
+                ),
+                check_bounds=False,
             )
 
         columns_to_slice = [
