@@ -12,11 +12,7 @@ from typing_extensions import assert_never
 
 import cudf
 from cudf._typing import Dtype, NotImplementedType, ScalarLike
-from cudf.api.types import (
-    _is_scalar_or_zero_d_array,
-    is_bool_dtype,
-    is_integer_dtype,
-)
+from cudf.api.types import _is_scalar_or_zero_d_array
 from cudf.core import indexing_utils
 from cudf.core.column import ColumnBase, as_column
 from cudf.core.frame import Frame
@@ -403,30 +399,6 @@ class SingleColumnFrame(Frame, NotIterable):
             return column.element_indexing(args)
         else:
             assert_never(spec)
-
-    def _get_elements_from_column(self, arg) -> Union[ScalarLike, ColumnBase]:
-        # A generic method for getting elements from a column that supports a
-        # wide range of different inputs. This method should only used where
-        # _absolutely_ necessary, since in almost all cases a more specific
-        # method can be used e.g. element_indexing or slice.
-        if _is_scalar_or_zero_d_array(arg):
-            return self._column.element_indexing(int(arg))
-        elif isinstance(arg, slice):
-            start, stop, stride = arg.indices(len(self))
-            return self._column.slice(start, stop, stride)
-        else:
-            arg = as_column(arg)
-            if len(arg) == 0:
-                arg = as_column([], dtype="int32")
-            if is_integer_dtype(arg.dtype):
-                return self._column.take(arg)
-            if is_bool_dtype(arg.dtype):
-                if (bn := len(arg)) != (n := len(self)):
-                    raise IndexError(
-                        f"Boolean mask has wrong length: {bn} not {n}"
-                    )
-                return self._column.apply_boolean_mask(arg)
-            raise NotImplementedError(f"Unknown indexer {type(arg)}")
 
     @_cudf_nvtx_annotate
     def where(self, cond, other=None, inplace=False):
