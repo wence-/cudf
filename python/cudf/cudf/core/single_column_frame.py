@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional, Tuple, Union
 
 import cupy
 import numpy as np
+from typing_extensions import assert_never
 
 import cudf
 from cudf._typing import Dtype, NotImplementedType, ScalarLike
@@ -16,6 +17,7 @@ from cudf.api.types import (
     is_bool_dtype,
     is_integer_dtype,
 )
+from cudf.core import indexing_utils
 from cudf.core.column import ColumnBase, as_column
 from cudf.core.frame import Frame
 from cudf.utils.utils import NotIterable, _cudf_nvtx_annotate
@@ -385,6 +387,22 @@ class SingleColumnFrame(Frame, NotIterable):
         if self._column.null_count == len(self):
             return 0
         return self._column.distinct_count(dropna=dropna)
+
+    def _get_structured_iloc(
+        self, spec: indexing_utils.Indexer, args: Any
+    ) -> Union[ScalarLike, ColumnBase]:
+        column = self._column
+        if spec is indexing_utils.Indexer.SLICE:
+            return column.slice(*args)
+        elif spec is indexing_utils.Indexer.MASK:
+            return column.apply_boolean_mask(args)
+        elif spec is indexing_utils.Indexer.INDICES:
+            # bounds-checking has been done in normalization
+            return column.take(args, check_bounds=False)
+        elif spec is indexing_utils.Indexer.SCALAR:
+            return column.element_indexing(args)
+        else:
+            assert_never(spec)
 
     def _get_elements_from_column(self, arg) -> Union[ScalarLike, ColumnBase]:
         # A generic method for getting elements from a column that supports a
