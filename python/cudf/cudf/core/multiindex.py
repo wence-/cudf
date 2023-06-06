@@ -972,6 +972,26 @@ class MultiIndex(Frame, BaseIndex, NotIterable):
         return obj._set_names(column_names)
 
     def _get_structured_iloc(self, spec, args) -> Union[ScalarLike, Self]:
+        """Index rows given structured data
+
+        Parameters
+        ----------
+        spec
+            The type of indexing to perform
+        args
+            Appropriately normalized arguments for the indexing action.
+
+        Returns
+        -------
+        A scalar (if `spec` requests a scalar) or else a new MultiIndex
+
+        Notes
+        -----
+        No bounds-checking is performed, since it is assumed that the
+        arguments will have been normalized and checked before calling
+        this function. They are usually constructed by calling
+        :func:~.indexing_utils.normalize_row_iloc_indexer`.
+        """
         frame = self.to_frame(index=False)
 
         # TODO: Move to dataframe

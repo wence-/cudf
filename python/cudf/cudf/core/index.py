@@ -390,6 +390,26 @@ class RangeIndex(BaseIndex, BinaryOperand):
     def _get_structured_iloc(
         self, spec: indexing_utils.Indexer, args: Any
     ) -> Union[ScalarLike, Self]:
+        """Index rows given structured data
+
+        Parameters
+        ----------
+        spec
+            The type of indexing to perform
+        args
+            Appropriately normalized arguments for the indexing action.
+
+        Returns
+        -------
+        A scalar (if `spec` requests a scalar) or else a new Index
+
+        Notes
+        -----
+        No bounds-checking is performed, since it is assumed that the
+        arguments will have been normalized and checked before calling
+        this function. They are usually constructed by calling
+        :func:~.indexing_utils.normalize_row_iloc_indexer`.
+        """
         if spec == indexing_utils.Indexer.SLICE:
             sl_start, sl_stop, sl_step = args
 
@@ -1410,10 +1430,31 @@ class GenericIndex(SingleColumnFrame, BaseIndex):
     def _get_structured_iloc(
         self, spec: indexing_utils.Indexer, args: Any
     ) -> Union[ScalarLike, Self]:
+        """Index rows given structured data
+
+        Parameters
+        ----------
+        spec
+            The type of indexing to perform
+        args
+            Appropriately normalized arguments for the indexing action.
+
+        Returns
+        -------
+        A scalar (if `spec` requests a scalar) or else a new Index
+
+        Notes
+        -----
+        No bounds-checking is performed, since it is assumed that the
+        arguments will have been normalized and checked before calling
+        this function. They are usually constructed by calling
+        :func:~.indexing_utils.normalize_row_iloc_indexer`.
+        """
         data = super()._get_structured_iloc(spec, args)
         if spec == indexing_utils.Indexer.SCALAR:
             return data
         else:
+            # TODO: should reconstruct with the self-specific constructor.
             data = as_index(data)
             data.name = self.name
             return data

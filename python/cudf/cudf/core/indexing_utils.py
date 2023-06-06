@@ -182,7 +182,7 @@ def normalize_row_iloc_indexer(
     -------
     IndexSpec
         Structured data for indexing. The first entry is a
-        :class:`Indexer` tag, the second entry are normalized
+        :class:`Indexer` tag, the second entry is normalized
         arguments to the tag-specific indexing routine.
 
     Raises

@@ -387,6 +387,31 @@ class SingleColumnFrame(Frame, NotIterable):
     def _get_structured_iloc(
         self, spec: indexing_utils.Indexer, args: Any
     ) -> Union[ScalarLike, ColumnBase]:
+        """Index rows given structured data
+
+        Parameters
+        ----------
+        spec
+            The type of indexing to perform
+        args
+            Appropriately normalized arguments for the indexing action.
+
+        Returns
+        -------
+        A scalar (if `spec` requests a scalar) or else an
+        appropriately indexed column.
+
+        Notes
+        -----
+        This function deliberately does not return something of type
+        Self, since callers typically need to do other things and it
+        is easier to manipulate columns.
+
+        No bounds-checking is performed, since it is assumed that the
+        arguments will have been normalized and checked before calling
+        this function. They are usually constructed by calling
+        :func:~.indexing_utils.normalize_row_iloc_indexer`.
+        """
         column = self._column
         if spec is indexing_utils.Indexer.SLICE:
             return column.slice(*args)
