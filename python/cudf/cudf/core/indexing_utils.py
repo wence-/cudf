@@ -13,6 +13,7 @@ import cudf._lib as libcudf
 from cudf.api.types import (
     _is_scalar_or_zero_d_array,
     is_bool_dtype,
+    is_integer,
     is_integer_dtype,
 )
 
@@ -108,7 +109,7 @@ def unpack_loc_key(key, frame: cudf.DataFrame | cudf.Series):
 
 def unpack_dataframe_iloc_indexer(
     key: Any, frame: cudf.DataFrame
-) -> Tuple[Any, ColumnLabels]:
+) -> Tuple[Any, Tuple[bool, ColumnLabels]]:
     """Unpack and index key for DataFrame iloc getitem.
 
     Parameters
@@ -121,7 +122,8 @@ def unpack_dataframe_iloc_indexer(
     Returns
     -------
     tuple
-        2-tuple of a key for the rows and a sequence of column names
+        2-tuple of a key for the rows and tuple of
+        (scalar_column_index, column_names) for the columns
 
     Raises
     ------
@@ -129,6 +131,7 @@ def unpack_dataframe_iloc_indexer(
         If the column indexer is invalid
     """
     rows, cols = unpack_iloc_key(key, frame)
+    scalar = is_integer(cols)
     try:
         column_names: ColumnLabels = frame._data.get_labels_by_index(cols)
     except TypeError:
@@ -136,7 +139,7 @@ def unpack_dataframe_iloc_indexer(
             "Column indices must be integers, slices, "
             "or list-like of integers"
         )
-    return (rows, column_names)
+    return (rows, (scalar, column_names))
 
 
 def unpack_series_iloc_indexer(key: Any, frame: cudf.Series) -> Any:
