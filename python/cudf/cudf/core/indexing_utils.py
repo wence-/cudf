@@ -199,14 +199,16 @@ def normalize_row_iloc_indexer(
         return (Indexer.SLICE, key.indices(n))
     else:
         if _is_scalar_or_zero_d_array(key):
-            # Column.element_indexing does bounds checking in this
-            # case
-            dtype = np.asarray(key).dtype
-            if not is_integer_dtype(dtype):
+            key = np.asarray(key)
+            if not is_integer_dtype(key.dtype):
                 raise TypeError(
                     "Cannot index by location with non-integer key"
                 )
-            return (Indexer.SCALAR, int(key))
+            if key < 0:
+                key += n
+            if not 0 <= key < n:
+                raise IndexError("Positional indexer is out-of-bounds")
+            return (Indexer.SCALAR, key.astype(np.int32))
         key = as_column(key)
         if isinstance(key, cudf.core.column.CategoricalColumn):
             key = key.as_categorical_column(key.categories.dtype)
