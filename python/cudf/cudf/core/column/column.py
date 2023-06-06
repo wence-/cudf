@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 from numba import cuda
-from typing_extensions import Self
+from typing_extensions import Self, assert_never
 
 import rmm
 
@@ -64,6 +64,7 @@ from cudf.api.types import (
     is_string_dtype,
     is_struct_dtype,
 )
+from cudf.core import indexing_utils
 from cudf.core._compat import PANDAS_GE_150
 from cudf.core.abc import Serializable
 from cudf.core.buffer import (
@@ -570,6 +571,21 @@ class ColumnBase(Column, Serializable, BinaryOperand, Reducible):
                 dtype=cudf.dtype(np.int32),
             )
             return self.take(gather_map)
+
+    def _get_structured_iloc(
+        self, spec: indexing_utils.Indexer, args: Any
+    ) -> Union[ScalarLike, Self]:
+        if spec is indexing_utils.Indexer.SLICE:
+            return self.slice(*args)
+        elif spec is indexing_utils.Indexer.MASK:
+            return self.apply_boolean_mask(args)
+        elif spec is indexing_utils.Indexer.INDICES:
+            # bounds-checking has been done in normalization
+            return self.take(args, check_bounds=False)
+        elif spec is indexing_utils.Indexer.SCALAR:
+            return self.element_indexing(args)
+        else:
+            assert_never(spec)
 
     def __setitem__(self, key: Any, value: Any):
         """

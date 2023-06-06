@@ -15,7 +15,6 @@ from cudf.api.types import (
     is_bool_dtype,
     is_integer_dtype,
 )
-from cudf.core.column import as_column
 
 
 class Indexer(enum.IntEnum):
@@ -209,7 +208,7 @@ def normalize_row_iloc_indexer(
             if not 0 <= key < n:
                 raise IndexError("Positional indexer is out-of-bounds")
             return (Indexer.SCALAR, key.astype(np.int32))
-        key = as_column(key)
+        key = cudf.core.column.as_column(key)
         if isinstance(key, cudf.core.column.CategoricalColumn):
             key = key.as_categorical_column(key.categories.dtype)
         if is_bool_dtype(key.dtype):

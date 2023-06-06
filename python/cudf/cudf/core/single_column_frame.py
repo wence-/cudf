@@ -8,7 +8,6 @@ from typing import Any, Dict, Optional, Tuple, Union
 
 import cupy
 import numpy as np
-from typing_extensions import assert_never
 
 import cudf
 from cudf._typing import Dtype, NotImplementedType, ScalarLike
@@ -412,18 +411,7 @@ class SingleColumnFrame(Frame, NotIterable):
         this function. They are usually constructed by calling
         :func:~.indexing_utils.normalize_row_iloc_indexer`.
         """
-        column = self._column
-        if spec is indexing_utils.Indexer.SLICE:
-            return column.slice(*args)
-        elif spec is indexing_utils.Indexer.MASK:
-            return column.apply_boolean_mask(args)
-        elif spec is indexing_utils.Indexer.INDICES:
-            # bounds-checking has been done in normalization
-            return column.take(args, check_bounds=False)
-        elif spec is indexing_utils.Indexer.SCALAR:
-            return column.element_indexing(args)
-        else:
-            assert_never(spec)
+        return self._column._get_structured_iloc(spec, args)
 
     @_cudf_nvtx_annotate
     def where(self, cond, other=None, inplace=False):
