@@ -16,7 +16,6 @@ import numpy as np
 import pandas as pd
 from pandas._config import get_option
 from pandas.core.dtypes.common import is_float
-from typing_extensions import assert_never
 
 import cudf
 from cudf import _lib as libcudf
@@ -191,22 +190,13 @@ class _SeriesIlocIndexer(_FrameIndexer):
             len(self._frame),
             check_bounds=True,
         )
-        column = self._frame._column
-        if spec == indexing_utils.Indexer.SLICE:
-            data = column.slice(*args)
-        elif spec == indexing_utils.Indexer.MASK:
-            data = column.apply_boolean_mask(args)
-        elif spec == indexing_utils.Indexer.INDICES:
-            # bounds-checking has been done in normalization
-            data = column.take(args, check_bounds=False)
-        elif spec == indexing_utils.Indexer.SCALAR:
-            return column.element_indexing(args)
-        else:
-            assert_never(spec)
+        result = self._frame._get_structured_iloc(spec, args)
+        if spec == indexing_utils.Indexer.SCALAR:
+            return result
+        index = self._frame.index._get_structured_iloc(spec, args)
         return self._frame._from_data(
-            {self._frame.name: data},
-            # TODO update index.__getitem__ to handle normalized args
-            index=cudf.Index(self._frame.index[arg]),
+            {self._frame.name: result},
+            index=index,
         )
 
     @_cudf_nvtx_annotate
