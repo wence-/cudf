@@ -16,10 +16,10 @@ import numpy as np
 import pandas as pd
 from pandas._config import get_option
 from pandas.core.dtypes.common import is_float
+from typing_extensions import assert_never
 
 import cudf
 from cudf import _lib as libcudf
-from cudf._lib.scalar import _is_null_host_scalar
 from cudf._typing import (
     ColumnLike,
     DataFrameOrSeries,
@@ -40,6 +40,7 @@ from cudf.api.types import (
     is_string_dtype,
     is_struct_dtype,
 )
+from cudf.core import indexing_utils
 from cudf.core.abc import Serializable
 from cudf.core.buffer import acquire_spill_lock
 from cudf.core.column import (
@@ -185,18 +186,26 @@ class _SeriesIlocIndexer(_FrameIndexer):
 
     @_cudf_nvtx_annotate
     def __getitem__(self, arg):
-        if isinstance(arg, tuple):
-            arg = list(arg)
-        data = self._frame._get_elements_from_column(arg)
-
-        if (
-            isinstance(data, (dict, list))
-            or _is_scalar_or_zero_d_array(data)
-            or _is_null_host_scalar(data)
-        ):
-            return data
+        spec, args = indexing_utils.normalize_row_iloc_indexer(
+            indexing_utils.unpack_series_iloc_indexer(arg, self._frame),
+            len(self._frame),
+            check_bounds=True,
+        )
+        column = self._frame._column
+        if spec == indexing_utils.Indexer.SLICE:
+            data = column.slice(*args)
+        elif spec == indexing_utils.Indexer.MASK:
+            data = column.apply_boolean_mask(args)
+        elif spec == indexing_utils.Indexer.INDICES:
+            # bounds-checking has been done in normalization
+            data = column.take(args, check_bounds=False)
+        elif spec == indexing_utils.Indexer.SCALAR:
+            return column.element_indexing(args)
+        else:
+            assert_never(spec)
         return self._frame._from_data(
             {self._frame.name: data},
+            # TODO update index.__getitem__ to handle normalized args
             index=cudf.Index(self._frame.index[arg]),
         )
 
