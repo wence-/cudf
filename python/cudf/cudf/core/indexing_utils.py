@@ -31,7 +31,7 @@ ColumnLabels: TypeAlias = Tuple[str, ...]
 
 
 def unpack_iloc_key(
-    key: Any, frame: cudf.DataFrame | cudf.Series
+    key: Any, frame: cudf.DataFrame | cudf.Series, n: int
 ) -> Tuple[Any, ...]:
     """Unpack a user-level key to iloc.__getitem__
 
@@ -41,6 +41,8 @@ def unpack_iloc_key(
         Key to unpack
     frame
         DataFrame or Series to provide context
+    n
+        Number of dimensions we're expecting to unpack to.
 
     Returns
     -------
@@ -56,8 +58,7 @@ def unpack_iloc_key(
     # iteration to remove all callables.
     # See https://github.com/pandas-dev/pandas/issues/53533
     if callable(key):
-        return unpack_iloc_key(key(frame), frame)
-    n = len(frame.shape)
+        return unpack_iloc_key(key(frame), frame, n)
     if isinstance(key, tuple):
         indexers = tuple(
             itertools.chain(key, itertools.repeat(slice(None), n - len(key)))
@@ -69,7 +70,8 @@ def unpack_iloc_key(
             raise IndexError(
                 "Too many indexers: can't have nested tuples for iloc"
             )
-        return tuple(unpack_iloc_key(k, frame) for k in key)
+        # Hack, do this better
+        return tuple(unpack_iloc_key(k, frame, n - 1)[0] for k in key)
     # No special-casing, key gets rows, and if a dataframe second part
     # gets all columns
     return (key, slice(None))[:n]
@@ -104,7 +106,7 @@ def unpack_loc_key(key, frame: cudf.DataFrame | cudf.Series):
     # https://github.com/pandas-dev/pandas/issues/53535
     # So this is a slight difference, though arguably we are fine
     # since we can't have tuple labels anyway.
-    return unpack_iloc_key(key, frame)
+    return unpack_iloc_key(key, frame, len(frame.shape))
 
 
 def unpack_dataframe_iloc_indexer(
@@ -130,7 +132,7 @@ def unpack_dataframe_iloc_indexer(
     TypeError
         If the column indexer is invalid
     """
-    rows, cols = unpack_iloc_key(key, frame)
+    rows, cols = unpack_iloc_key(key, frame, len(frame.shape))
     scalar = is_integer(cols)
     try:
         column_names: ColumnLabels = frame._data.get_labels_by_index(cols)
@@ -156,7 +158,7 @@ def unpack_series_iloc_indexer(key: Any, frame: cudf.Series) -> Any:
     -------
     Single key that will index the rows
     """
-    (rows,) = unpack_iloc_key(key, frame)
+    (rows,) = unpack_iloc_key(key, frame, len(frame.shape))
     return rows
 
 
