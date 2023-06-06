@@ -401,57 +401,65 @@ class _DataFrameIlocIndexer(_DataFrameIndexer):
     For selection by index.
     """
 
-    @_cudf_nvtx_annotate
-    def _getitem_tuple_arg(self, arg):
-        # Iloc Step 1:
-        # Gather the columns specified by the second tuple arg
-        columns_df = self._frame._from_data(
-            self._frame._data.select_by_index(arg[1]), self._frame._index
+    _frame: DataFrame
+
+    def __getitem__(self, arg):
+        rows, (
+            col_scalar,
+            column_names,
+        ) = indexing_utils.unpack_dataframe_iloc_indexer(arg, self._frame)
+        row_spec, row_args = indexing_utils.normalize_row_iloc_indexer(
+            rows, len(self._frame), check_bounds=True
         )
-
-        # Iloc Step 2:
-        # Gather the rows specified by the first tuple arg
-        if isinstance(columns_df.index, MultiIndex):
-            if isinstance(arg[0], slice):
-                df = columns_df[arg[0]]
+        columns = tuple(
+            self._frame._data[k]._get_structured_iloc(row_spec, row_args)
+            for k in column_names
+        )
+        row_scalar = row_spec is indexing_utils.Indexer.SCALAR
+        if row_scalar and col_scalar:
+            (entry,) = columns
+            return entry
+        index = self._frame.index._get_structured_iloc(row_spec, row_args)
+        accessor = self._frame._data
+        if row_scalar:
+            columns = ([c] for c in columns)
+            if isinstance(self._frame.index, cudf.MultiIndex):
+                index = cudf.MultiIndex.from_tuples(
+                    [index], names=self._frame.index.names
+                )
             else:
-                df = columns_df.index._get_row_major(columns_df, arg[0])
-            if (len(df) == 1 and len(columns_df) >= 1) and not (
-                isinstance(arg[0], slice) or isinstance(arg[1], slice)
-            ):
-                # Pandas returns a numpy scalar in this case
-                return df.iloc[0]
-            if self._can_downcast_to_series(df, arg):
-                return self._downcast_to_series(df, arg)
-            return df
+                index = cudf.RangeIndex(
+                    start=index, stop=index + 1, name=self._frame.index.name
+                )
+        result = self._frame._from_data(
+            accessor.__class__(
+                data=dict(zip(column_names, columns)),
+                multiindex=accessor.multiindex,
+                level_names=accessor.level_names,
+            ),
+            index=index,
+        )
+        if row_scalar:
+            assert len(result) == 1
+            try:
+                # Behaviour difference from pandas, which will merrily
+                # turn any heterogeneous set of columns into a series if
+                # you only ask for one row.
+                new_name = result.index[0]
+                result = Series._concat(
+                    [result[name] for name in column_names],
+                    index=result.keys(),
+                )
+                result.name = new_name
+                return result
+            except TypeError:
+                # Couldn't find a common type, just return a 1xN dataframe.
+                return result
+        elif col_scalar:
+            (name,) = column_names
+            return result[name]
         else:
-            if isinstance(arg[0], slice):
-                df = columns_df._slice(arg[0])
-            elif is_scalar(arg[0]):
-                index = arg[0]
-                if index < 0:
-                    index += len(columns_df)
-                df = columns_df._slice(slice(index, index + 1, 1))
-            else:
-                arg = (as_column(arg[0]), arg[1])
-                if is_bool_dtype(arg[0]):
-                    df = columns_df._apply_boolean_mask(arg[0])
-                else:
-                    df = columns_df._gather(arg[0])
-
-        # Iloc Step 3:
-        # Reindex
-        if df.shape[0] == 1:  # we have a single row without an index
-            df.index = as_index(self._frame.index[arg[0]])
-
-        # Iloc Step 4:
-        # Downcast
-        if self._can_downcast_to_series(df, arg):
-            return self._downcast_to_series(df, arg)
-
-        if df.shape[0] == 0 and df.shape[1] == 0 and isinstance(arg[0], slice):
-            df._index = as_index(self._frame.index[arg[0]])
-        return df
+            return result
 
     @_cudf_nvtx_annotate
     def _setitem_tuple_arg(self, key, value):

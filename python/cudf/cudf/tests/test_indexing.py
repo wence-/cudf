@@ -1901,9 +1901,18 @@ def test_iloc_13266():
     assert_eq(expect, actual)
 
 
-@pytest.mark.xfail(reason="https://github.com/rapidsai/cudf/issues/13267")
 @pytest.mark.parametrize(
-    "indexer", [(..., 0), (0, ...)], ids=["row_ellipsis", "column_ellipsis"]
+    "indexer",
+    [
+        (..., 0),
+        pytest.param(
+            (0, ...),
+            marks=pytest.mark.xfail(
+                reason="https://github.com/rapidsai/cudf/issues/13267"
+            ),
+        ),
+    ],
+    ids=["row_ellipsis", "column_ellipsis"],
 )
 def test_iloc_13267(indexer):
     df = pd.DataFrame(np.arange(4).reshape(2, 2))
@@ -1919,28 +1928,13 @@ def test_iloc_13267(indexer):
     [
         0,
         (slice(None), 0),
-        pytest.param(
-            ([0, 2], 1),
-            marks=pytest.mark.xfail(
-                reason="https://github.com/rapidsai/cudf/issues/13515"
-            ),
-        ),
+        ([0, 2], 1),
         (slice(None), slice(None)),
         (slice(None), [1, 0]),
         (0, 0),
         (1, [1, 0]),
-        pytest.param(
-            ([1, 0], 0),
-            marks=pytest.mark.xfail(
-                reason="https://github.com/rapidsai/cudf/issues/13515"
-            ),
-        ),
-        pytest.param(
-            ([1, 2], [0, 1]),
-            marks=pytest.mark.xfail(
-                reason="https://github.com/rapidsai/cudf/issues/13515"
-            ),
-        ),
+        ([1, 0], 0),
+        ([1, 2], [0, 1]),
     ],
 )
 def test_iloc_multiindex_13515(indexer):
