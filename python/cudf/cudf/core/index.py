@@ -6,7 +6,6 @@ import math
 import pickle
 import warnings
 from functools import cached_property
-from numbers import Number
 from typing import (
     Any,
     Dict,
@@ -22,11 +21,13 @@ import cupy
 import numpy as np
 import pandas as pd
 from pandas._config import get_option
+from typing_extensions import Self
 
 import cudf
 from cudf._lib.datetime import extract_quarter, is_leap_year
 from cudf._lib.filling import sequence
 from cudf._lib.search import search_sorted
+from cudf._typing import ScalarLike
 from cudf.api.types import (
     _is_non_decimal_numeric_dtype,
     is_categorical_dtype,
@@ -36,6 +37,7 @@ from cudf.api.types import (
     is_scalar,
     is_string_dtype,
 )
+from cudf.core import indexing_utils
 from cudf.core._base_index import BaseIndex, _index_astype_docstring
 from cudf.core.column import (
     CategoricalColumn,
@@ -385,24 +387,32 @@ class RangeIndex(BaseIndex, BinaryOperand):
     def __len__(self):
         return len(range(self._start, self._stop, self._step))
 
-    @_cudf_nvtx_annotate
-    def __getitem__(self, index):
-        if isinstance(index, slice):
-            sl_start, sl_stop, sl_step = index.indices(len(self))
+    def _get_structured_iloc(
+        self, spec: indexing_utils.Indexer, args: Any
+    ) -> Union[ScalarLike, Self]:
+        if spec == indexing_utils.Indexer.SLICE:
+            sl_start, sl_stop, sl_step = args
 
             lo = self._start + sl_start * self._step
             hi = self._start + sl_stop * self._step
             st = self._step * sl_step
             return RangeIndex(start=lo, stop=hi, step=st, name=self._name)
-
-        elif isinstance(index, Number):
-            len_self = len(self)
+        elif spec == indexing_utils.Indexer.SCALAR:
+            index = args
+            n = len(self)
             if index < 0:
-                index += len_self
-            if not (0 <= index < len_self):
+                index += n
+            if not (0 <= index < n):
                 raise IndexError("Index out of bounds")
             return self._start + index * self._step
-        return self._as_int_index()[index]
+        return self._as_int_index()._get_structured_iloc(spec, args)
+
+    @_cudf_nvtx_annotate
+    def __getitem__(self, index):
+        spec, args = indexing_utils.normalize_row_iloc_indexer(
+            index, len(self), check_bounds=True
+        )
+        return self._get_structured_iloc(spec, args)
 
     @_cudf_nvtx_annotate
     def equals(self, other):
@@ -1397,13 +1407,23 @@ class GenericIndex(SingleColumnFrame, BaseIndex):
 
         return "\n".join(lines)
 
+    def _get_structured_iloc(
+        self, spec: indexing_utils.Indexer, args: Any
+    ) -> Union[ScalarLike, Self]:
+        data = super()._get_structured_iloc(spec, args)
+        if spec == indexing_utils.Indexer.SCALAR:
+            return data
+        else:
+            data = as_index(data)
+            data.name = self.name
+            return data
+
     @_cudf_nvtx_annotate
     def __getitem__(self, index):
-        res = self._get_elements_from_column(index)
-        if isinstance(res, ColumnBase):
-            res = as_index(res)
-            res.name = self.name
-        return res
+        spec, args = indexing_utils.normalize_row_iloc_indexer(
+            index, len(self), check_bounds=True
+        )
+        return self._get_structured_iloc(spec, args)
 
     @property  # type: ignore
     @_cudf_nvtx_annotate

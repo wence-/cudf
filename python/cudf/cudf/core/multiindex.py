@@ -8,19 +8,19 @@ import pickle
 import warnings
 from collections import abc
 from functools import cached_property
-from numbers import Integral
 from typing import Any, List, MutableMapping, Tuple, Union
 
 import cupy as cp
 import numpy as np
 import pandas as pd
 from pandas._config import get_option
+from typing_extensions import Self, assert_never
 
 import cudf
 from cudf import _lib as libcudf
-from cudf._typing import DataFrameOrSeries
+from cudf._typing import DataFrameOrSeries, ScalarLike
 from cudf.api.types import is_integer, is_list_like, is_object_dtype
-from cudf.core import column
+from cudf.core import column, indexing_utils
 from cudf.core._compat import PANDAS_GE_150
 from cudf.core.frame import Frame
 from cudf.core.index import (
@@ -971,31 +971,47 @@ class MultiIndex(Frame, BaseIndex, NotIterable):
         obj = super().deserialize(header, frames)
         return obj._set_names(column_names)
 
-    @_cudf_nvtx_annotate
-    def __getitem__(self, index):
-        flatten = isinstance(index, int)
+    def _get_structured_iloc(self, spec, args) -> Union[ScalarLike, Self]:
+        frame = self.to_frame(index=False)
 
-        if isinstance(index, (Integral, abc.Sequence)):
-            index = np.array(index)
-        elif isinstance(index, slice):
-            start, stop, step = index.indices(len(self))
-            index = column.arange(start, stop, step)
-        result = MultiIndex.from_frame(self.to_frame(index=False).take(index))
+        # TODO: Move to dataframe
+        def index_frame(frame: cudf.DataFrame):
+            if spec is indexing_utils.Indexer.SLICE:
+                return frame._slice(slice(*args))
+            elif spec is indexing_utils.Indexer.INDICES:
+                return frame._gather(
+                    args, keep_index=False, check_bounds=False
+                )
+            elif spec is indexing_utils.Indexer.MASK:
+                return frame._apply_boolean_mask(args)
+            elif spec is indexing_utils.Indexer.SCALAR:
+                # TODO: use unchecked API
+                return frame.take(args)
+            else:
+                assert_never(spec)
+
+        result = MultiIndex.from_frame(index_frame(frame))
 
         # we are indexing into a single row of the MultiIndex,
         # return that row as a tuple:
-        if flatten:
+        if spec == indexing_utils.Indexer.SCALAR:
             return result.to_pandas()[0]
-
         if self._codes is not None:
-            result._codes = self._codes.take(index)
+            result._codes = index_frame(self._codes)
         if self._levels is not None:
             result._levels = self._levels
         result.names = self.names
         return result
 
     @_cudf_nvtx_annotate
-    def to_frame(self, index=True, name=None):
+    def __getitem__(self, index) -> Union[ScalarLike, Self]:
+        spec, args = indexing_utils.normalize_row_iloc_indexer(
+            index, len(self), check_bounds=True
+        )
+        return self._get_structured_iloc(spec, args)
+
+    @_cudf_nvtx_annotate
+    def to_frame(self, index=True, name=None) -> cudf.DataFrame:
         # TODO: Currently this function makes a shallow copy, which is
         # incorrect. We want to make a deep copy, otherwise further
         # modifications of the resulting DataFrame will affect the MultiIndex.
