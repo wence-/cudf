@@ -2898,10 +2898,12 @@ class IndexedFrame(Frame):
             self._index.names,
         )
 
-    def _apply_boolean_mask(self, boolean_mask):
+    def _apply_boolean_mask(self, boolean_mask, keep_index=True):
         """Apply boolean mask to each row of `self`.
 
         Rows corresponding to `False` is dropped.
+
+        If keep_index is False, the index is not preserved.
         """
         boolean_mask = cudf.core.column.as_column(boolean_mask)
         if not is_bool_dtype(boolean_mask.dtype):
@@ -2910,10 +2912,13 @@ class IndexedFrame(Frame):
             raise IndexError(f"Boolean mask has wrong length: {bn} not {n}")
         return self._from_columns_like_self(
             libcudf.stream_compaction.apply_boolean_mask(
-                list(self._index._columns + self._columns), boolean_mask
+                list(self._index._columns + self._columns)
+                if keep_index
+                else list(self._columns),
+                boolean_mask,
             ),
             column_names=self._column_names,
-            index_names=self._index.names,
+            index_names=self._index.names if keep_index else None,
         )
 
     def take(self, indices, axis=0):
