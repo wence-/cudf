@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2021-2022, NVIDIA CORPORATION &
+# SPDX-FileCopyrightText: Copyright (c) 2021-2023, NVIDIA CORPORATION &
 # AFFILIATES. All rights reserved.  SPDX-License-Identifier:
 # Apache-2.0
 #
@@ -20,6 +20,7 @@ import pandas as pd
 import cudf
 import cudf._lib.labeling
 import cudf.core.index
+import cudf.core.validation_utils as vu
 from cudf._typing import DataFrameOrSeries
 from cudf.core.groupby.groupby import (
     DataFrameGroupBy,
@@ -31,7 +32,6 @@ from cudf.core.tools.datetimes import _offset_alias_to_code, _unit_dtype_map
 
 
 class _Resampler(GroupBy):
-
     grouping: "_ResampleGrouping"
 
     def __init__(self, obj, by, axis=None, kind=None):
@@ -92,7 +92,6 @@ class SeriesResampler(_Resampler, SeriesGroupBy):
 
 
 class _ResampleGrouping(_Grouping):
-
     bin_labels: cudf.core.index.Index
 
     def _handle_frequency_grouper(self, by):
@@ -204,15 +203,17 @@ class _ResampleGrouping(_Grouping):
         nbins = bin_numbers.max() + 1
         if len(bin_labels) > nbins:
             bin_labels = bin_labels[:nbins]
-
+        elif len(bin_labels) < nbins:
+            raise RuntimeError("Too few bin labels!")
         bin_labels.name = self.names[0]
         self.bin_labels = bin_labels
 
+        gather_map = vu.as_gather_map(
+            bin_numbers, len(bin_labels), nullify=False, check_bounds=False
+        )
         # replace self._key_columns with the binned key column:
         self._key_columns = [
-            bin_labels._gather(bin_numbers, check_bounds=False)._column.astype(
-                result_type
-            )
+            bin_labels._gather(gather_map)._column.astype(result_type)
         ]
 
 

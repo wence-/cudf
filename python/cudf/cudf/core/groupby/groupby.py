@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 import cudf
+import cudf.core.validation_utils as vu
 from cudf._lib import groupby as libgroupby
 from cudf._lib.null_mask import bitmask_or
 from cudf._lib.reshape import interleave_columns
@@ -1914,7 +1915,14 @@ class GroupBy(Serializable, Reducible, Scannable):
         # dataframe, to match pandas behavior
         unsorted_idx = gb_cov_corr.index.repeat(num_cols)
         idx_sort_order = unsorted_idx._get_sorted_inds()
-        sorted_idx = unsorted_idx._gather(idx_sort_order)
+        sorted_idx = unsorted_idx._gather(
+            vu.as_gather_map(
+                idx_sort_order,
+                len(unsorted_idx),
+                nullify=False,
+                check_bounds=False,
+            )
+        )
         if len(gb_cov_corr):
             # TO-DO: Should the operation below be done on the CPU instead?
             sorted_idx._data[None] = as_column(

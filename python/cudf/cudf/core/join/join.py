@@ -1,4 +1,4 @@
-# Copyright (c) 2020-2022, NVIDIA CORPORATION.
+# Copyright (c) 2020-2023, NVIDIA CORPORATION.
 from __future__ import annotations
 
 import warnings
@@ -6,6 +6,7 @@ from typing import Any, ClassVar, List, Optional
 
 import cudf
 from cudf import _lib as libcudf
+from cudf.core import validation_utils as vu
 from cudf.core.join._join_helpers import (
     _coerce_to_tuple,
     _ColumnIndexer,
@@ -189,22 +190,21 @@ class Merge:
             how=self.how,
         )
 
-        gather_kwargs = {
-            "nullify": True,
-            "check_bounds": False,
-            "keep_index": self._using_left_index or self._using_right_index,
-        }
-        left_result = (
-            self.lhs._gather(gather_map=left_rows, **gather_kwargs)
-            if left_rows is not None
-            else cudf.DataFrame._from_data({})
-        )
-        right_result = (
-            self.rhs._gather(gather_map=right_rows, **gather_kwargs)
-            if right_rows is not None
-            else cudf.DataFrame._from_data({})
-        )
-
+        keep_index = self._using_left_index or self._using_right_index
+        if left_rows is None:
+            left_result = cudf.DataFrame._from_data({})
+        else:
+            left_rows = vu.as_gather_map(
+                left_rows, len(self.lhs), nullify=True, check_bounds=False
+            )
+            left_result = self.lhs._gather(left_rows, keep_index=keep_index)
+        if right_rows is None:
+            right_result = cudf.DataFrame._from_data({})
+        else:
+            right_rows = vu.as_gather_map(
+                right_rows, len(self.rhs), nullify=True, check_bounds=False
+            )
+            right_result = self.rhs._gather(right_rows, keep_index=keep_index)
         result = cudf.DataFrame._from_data(
             *self._merge_results(left_result, right_result)
         )
@@ -304,11 +304,13 @@ class Merge:
             by.extend([result._data[col.name] for col in self._right_keys])
         if by:
             to_sort = cudf.DataFrame._from_data(dict(enumerate(by)))
-            sort_order = to_sort.argsort()
+            sort_order = cudf.core.column.as_column(to_sort.argsort())
+            order = vu.as_gather_map(
+                sort_order, len(result), nullify=False, check_bounds=False
+            )
             result = result._gather(
-                sort_order,
+                order,
                 keep_index=self._using_left_index or self._using_right_index,
-                check_bounds=False,
             )
         return result
 

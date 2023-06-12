@@ -4,28 +4,23 @@ from __future__ import annotations
 
 import pickle
 import warnings
+from collections import abc
 from functools import cached_property
-from typing import Any, Set
+from typing import Any, List, Optional, Set, Tuple
 
 import pandas as pd
 from typing_extensions import Self
 
 import cudf
-from cudf._lib.copying import _gather_map_is_valid, gather
+from cudf._lib.copying import gather
 from cudf._lib.stream_compaction import (
     apply_boolean_mask,
     drop_duplicates,
     drop_nulls,
 )
-from cudf._lib.types import size_type_dtype
-from cudf._typing import DtypeObj
-from cudf.api.types import (
-    is_bool_dtype,
-    is_integer,
-    is_integer_dtype,
-    is_list_like,
-    is_scalar,
-)
+from cudf._typing import Dtype, DtypeObj
+from cudf.api.types import is_bool_dtype, is_integer, is_list_like, is_scalar
+from cudf.core import validation_utils as vu
 from cudf.core.abc import Serializable
 from cudf.core.column import ColumnBase, column
 from cudf.core.column_accessor import ColumnAccessor
@@ -70,6 +65,23 @@ class BaseIndex(Serializable):
     dtype: DtypeObj
     _accessors: Set[Any] = set()
     _data: ColumnAccessor
+
+    def _from_columns_like_self(
+        self,
+        columns: List[ColumnBase],
+        column_names: Optional[abc.Iterable[str]] = None,
+        *,
+        override_dtypes: Optional[abc.Iterable[Optional[Dtype]]] = None,
+    ):
+        raise NotImplementedError
+
+    @property
+    def _columns(self) -> Tuple[ColumnBase, ...]:
+        raise NotImplementedError
+
+    @property
+    def _column_names(self) -> Tuple[str, ...]:
+        raise NotImplementedError
 
     @cached_property
     def _values(self) -> ColumnBase:
@@ -1642,26 +1654,18 @@ class BaseIndex(Serializable):
             self._column_names,
         )
 
-    def _gather(self, gather_map, nullify=False, check_bounds=True):
+    def _gather(self, gather_map: vu.GatherMap):
         """Gather rows of index specified by indices in `gather_map`.
 
         Skip bounds checking if check_bounds is False.
         Set rows to null for all out of bound indices if nullify is `True`.
         """
-        gather_map = cudf.core.column.as_column(gather_map)
-
-        # TODO: For performance, the check and conversion of gather map should
-        # be done by the caller. This check will be removed in future release.
-        if not is_integer_dtype(gather_map.dtype):
-            gather_map = gather_map.astype(size_type_dtype)
-
-        if not _gather_map_is_valid(
-            gather_map, len(self), check_bounds, nullify
-        ):
-            raise IndexError("Gather map index is out of bounds.")
-
         return self._from_columns_like_self(
-            gather(list(self._columns), gather_map, nullify=nullify),
+            gather(
+                list(self._columns),
+                gather_map.column,
+                nullify=gather_map.nullify,
+            ),
             self._column_names,
         )
 
@@ -1697,8 +1701,13 @@ class BaseIndex(Serializable):
             raise NotImplementedError(
                 "`allow_fill` and `fill_value` are unsupported."
             )
-
-        return self._gather(indices)
+        gather_map = vu.as_gather_map(
+            cudf.core.column.as_column(indices),
+            len(self),
+            nullify=False,
+            check_bounds=True,
+        )
+        return self._gather(gather_map)
 
     def _apply_boolean_mask(self, boolean_mask):
         """Apply boolean mask to each row of `self`.

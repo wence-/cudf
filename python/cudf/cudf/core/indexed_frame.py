@@ -45,11 +45,11 @@ from cudf.api.types import (
     is_categorical_dtype,
     is_decimal_dtype,
     is_dict_like,
-    is_integer_dtype,
     is_list_dtype,
     is_list_like,
     is_scalar,
 )
+from cudf.core import validation_utils as vu
 from cudf.core._base_index import BaseIndex
 from cudf.core.buffer import acquire_spill_lock
 from cudf.core.column import ColumnBase, as_column, full
@@ -1008,8 +1008,26 @@ class IndexedFrame(Frame):
         data = self
 
         if not isinstance(data._index, cudf.RangeIndex):
-            perm_sort = data._index.argsort()
-            data = data._gather(perm_sort)
+            perm = cudf.core.column.as_column(data._index.argsort())
+            (inv_perm,) = libcudf.copying.scatter(
+                [
+                    cudf.core.column.arange(
+                        0, len(perm), dtype=libcudf.types.size_type_dtype
+                    )
+                ],
+                perm,
+                [cudf.core.column.column_empty_like(perm)],
+            )
+            perm_map = vu.as_gather_map(
+                perm,
+                len(data),
+                nullify=False,
+                check_bounds=False,
+            )
+            data = data._gather(perm_map)
+            inv_map = vu.as_gather_map(
+                inv_perm, len(data), nullify=False, check_bounds=False
+            )
 
         interpolator = cudf.core.algorithms.get_column_interpolator(method)
         columns = {}
@@ -1025,7 +1043,7 @@ class IndexedFrame(Frame):
         return (
             result
             if isinstance(data._index, cudf.RangeIndex)
-            else result._gather(perm_sort.argsort())
+            else result._gather(inv_map)
         )
 
     @_cudf_nvtx_annotate
@@ -1550,7 +1568,10 @@ class IndexedFrame(Frame):
                 inds = idx._get_sorted_inds(
                     ascending=ascending, na_position=na_position
                 )
-                out = self._gather(inds)
+                gather_map = vu.as_gather_map(
+                    inds, len(self), nullify=False, check_bounds=False
+                )
+                out = self._gather(gather_map)
                 # TODO: frame factory function should handle multilevel column
                 # names
                 if (
@@ -1563,10 +1584,13 @@ class IndexedFrame(Frame):
             ):
                 out = self.copy()
             else:
-                inds = idx.argsort(
-                    ascending=ascending, na_position=na_position
+                inds = as_column(
+                    idx.argsort(ascending=ascending, na_position=na_position)
                 )
-                out = self._gather(inds)
+                gather_map = vu.as_gather_map(
+                    inds, len(self), nullify=False, check_bounds=False
+                )
+                out = self._gather(gather_map)
                 if (
                     isinstance(self, cudf.core.dataframe.DataFrame)
                     and self._data.multiindex
@@ -1725,32 +1749,24 @@ class IndexedFrame(Frame):
         )
 
     def _gather(
-        self, gather_map, keep_index=True, nullify=False, check_bounds=True
+        self,
+        gather_map: vu.GatherMap,
+        keep_index=True,
     ):
         """Gather rows of frame specified by indices in `gather_map`.
 
         Skip bounds checking if check_bounds is False.
         Set rows to null for all out of bound indices if nullify is `True`.
         """
-        gather_map = cudf.core.column.as_column(gather_map)
-
-        # TODO: For performance, the check and conversion of gather map should
-        # be done by the caller. This check will be removed in future release.
-        if not is_integer_dtype(gather_map.dtype):
-            gather_map = gather_map.astype(size_type_dtype)
-
-        if not libcudf.copying._gather_map_is_valid(
-            gather_map, len(self), check_bounds, nullify
-        ):
-            raise IndexError("Gather map index is out of bounds.")
-
+        # We're not fully typed yet...
+        assert isinstance(gather_map, vu.GatherMap)
         return self._from_columns_like_self(
             libcudf.copying.gather(
                 list(self._index._columns + self._columns)
                 if keep_index
                 else list(self._columns),
-                gather_map,
-                nullify=nullify,
+                gather_map.column,
+                nullify=gather_map.nullify,
             ),
             self._column_names,
             self._index.names if keep_index else None,
@@ -2275,8 +2291,13 @@ class IndexedFrame(Frame):
 
         # argsort the `by` column
         out = self._gather(
-            self._get_columns_by_label(by)._get_sorted_inds(
-                ascending=ascending, na_position=na_position
+            vu.as_gather_map(
+                self._get_columns_by_label(by)._get_sorted_inds(
+                    ascending=ascending, na_position=na_position
+                ),
+                len(self),
+                nullify=False,
+                check_bounds=True,
             ),
             keep_index=not ignore_index,
         )
@@ -2301,11 +2322,15 @@ class IndexedFrame(Frame):
 
             # argsort the `by` column
             return self._gather(
-                self._get_columns_by_label(columns)
-                ._get_sorted_inds(ascending=not largest)
-                .slice(*slice(None, n).indices(len(self))),
+                vu.as_gather_map(
+                    self._get_columns_by_label(columns)
+                    ._get_sorted_inds(ascending=not largest)
+                    .slice(*slice(None, n).indices(len(self))),
+                    len(self),
+                    nullify=False,
+                    check_bounds=False,
+                ),
                 keep_index=True,
-                check_bounds=False,
             )
         elif keep == "last":
             indices = self._get_columns_by_label(columns)._get_sorted_inds(
@@ -2319,7 +2344,12 @@ class IndexedFrame(Frame):
                 indices = indices.slice(
                     *slice(None, -n - 1, -1).indices(len(self))
                 )
-            return self._gather(indices, keep_index=True, check_bounds=False)
+            return self._gather(
+                vu.as_gather_map(
+                    indices, len(self), nullify=False, check_bounds=False
+                ),
+                keep_index=True,
+            )
         else:
             raise ValueError('keep must be either "first", "last"')
 
@@ -2958,7 +2988,10 @@ class IndexedFrame(Frame):
         if self._get_axis_from_axis_arg(axis) != 0:
             raise NotImplementedError("Only axis=0 is supported.")
 
-        return self._gather(indices)
+        gather_map = vu.as_gather_map(
+            as_column(indices), len(self), nullify=False, check_bounds=True
+        )
+        return self._gather(gather_map)
 
     def _reset_index(self, level, drop, col_level=0, col_fill=""):
         """Shared path for DataFrame.reset_index and Series.reset_index."""
@@ -3312,10 +3345,15 @@ class IndexedFrame(Frame):
                 "Random sampling with cupy does not support these inputs."
             ) from e
 
-        return self._gather(
-            cudf.core.column.as_column(gather_map_array),
-            keep_index=not ignore_index,
+        gather_map = vu.as_gather_map(
+            as_column(gather_map_array),
+            len(self),
+            nullify=False,
             check_bounds=False,
+        )
+        return self._gather(
+            gather_map,
+            keep_index=not ignore_index,
         )
 
     def _sample_axis_1(

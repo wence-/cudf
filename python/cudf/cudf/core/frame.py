@@ -76,11 +76,11 @@ class Frame(BinaryOperand, Scannable):
         return 0 if self._num_columns == 0 else len(self._data.columns[0])
 
     @property
-    def _column_names(self) -> Tuple[Any, ...]:  # TODO: Tuple[str]?
+    def _column_names(self) -> Tuple[str, ...]:
         return tuple(self._data.names)
 
     @property
-    def _columns(self) -> Tuple[Any, ...]:  # TODO: Tuple[Column]?
+    def _columns(self) -> Tuple[ColumnBase, ...]:
         return tuple(self._data.columns)
 
     @property

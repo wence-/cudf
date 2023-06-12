@@ -24,6 +24,7 @@ import pandas as pd
 from pandas._config import get_option
 
 import cudf
+import cudf.core.validation_utils as vu
 from cudf._lib.datetime import extract_quarter, is_leap_year
 from cudf._lib.filling import sequence
 from cudf._lib.search import search_sorted
@@ -76,7 +77,10 @@ def _lexsorted_equal_range(
     """
     if not is_sorted:
         sort_inds = idx._get_sorted_inds()
-        sort_vals = idx._gather(sort_inds)
+        gather_map = vu.as_gather_map(
+            sort_inds, len(idx), nullify=False, check_bounds=False
+        )
+        sort_vals = idx._gather(gather_map)
     else:
         sort_inds = None
         sort_vals = idx
@@ -808,10 +812,14 @@ class RangeIndex(BaseIndex, BinaryOperand):
             return sorted_index
 
     @_cudf_nvtx_annotate
-    def _gather(self, gather_map, nullify=False, check_bounds=True):
-        gather_map = cudf.core.column.as_column(gather_map)
+    def _gather(self, gather_map: vu.GatherMap):
         return _dtype_to_index[self.dtype.type]._from_columns(
-            [self._values.take(gather_map, nullify, check_bounds)], [self.name]
+            [
+                self._values.take(
+                    gather_map.column, gather_map.nullify, check_bounds=False
+                )
+            ],
+            [self.name],
         )
 
     @_cudf_nvtx_annotate
