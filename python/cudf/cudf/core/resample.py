@@ -19,8 +19,8 @@ import pandas as pd
 
 import cudf
 import cudf._lib.labeling
+import cudf.core.copy_types as ct
 import cudf.core.index
-import cudf.core.validation_utils as vu
 from cudf._typing import DataFrameOrSeries
 from cudf.core.groupby.groupby import (
     DataFrameGroupBy,
@@ -208,7 +208,7 @@ class _ResampleGrouping(_Grouping):
         bin_labels.name = self.names[0]
         self.bin_labels = bin_labels
 
-        gather_map = vu.as_gather_map(
+        gather_map = ct.as_gather_map(
             bin_numbers, len(bin_labels), nullify=False, check_bounds=False
         )
         # replace self._key_columns with the binned key column:

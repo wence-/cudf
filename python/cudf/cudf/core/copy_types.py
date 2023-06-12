@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 
 class GatherMap(NamedTuple):
     column: "ColumnBase"
+    nrows: int
     nullify: bool
 
 
@@ -21,13 +22,16 @@ def as_gather_map(
     check_bounds: bool,
 ) -> GatherMap:
     if len(column) == 0:
-        # This is necessary because as_column([]) defaults to float64
         # Any empty column is valid as a gather map
-        return GatherMap(column.astype(size_type_dtype), nullify)
+        # This is necessary because as_column([]) defaults to float64
+        # TODO: we should fix this further up.
+        # Alternately we can have an Optional[Column] and handle None
+        # specially in _gather.
+        return GatherMap(column.astype(size_type_dtype), nrows, nullify)
     if column.dtype.kind != "i":
         raise IndexError("Gather map must have integer dtype")
     if not nullify and check_bounds:
         lo, hi = libcudf.reduce.minmax(column)
         if lo.value < -nrows or hi.value >= nrows:
             raise IndexError(f"Gather map is out of bounds for [0, {nrows})")
-    return GatherMap(column, nullify)
+    return GatherMap(column, nrows, nullify)

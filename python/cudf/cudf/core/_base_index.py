@@ -20,7 +20,7 @@ from cudf._lib.stream_compaction import (
 )
 from cudf._typing import Dtype, DtypeObj
 from cudf.api.types import is_bool_dtype, is_integer, is_list_like, is_scalar
-from cudf.core import validation_utils as vu
+from cudf.core import copy_types as ct
 from cudf.core.abc import Serializable
 from cudf.core.column import ColumnBase, column
 from cudf.core.column_accessor import ColumnAccessor
@@ -1654,7 +1654,7 @@ class BaseIndex(Serializable):
             self._column_names,
         )
 
-    def _gather(self, gather_map: vu.GatherMap):
+    def _gather(self, gather_map: ct.GatherMap):
         """Gather rows of index specified by indices in `gather_map`.
 
         Skip bounds checking if check_bounds is False.
@@ -1701,7 +1701,7 @@ class BaseIndex(Serializable):
             raise NotImplementedError(
                 "`allow_fill` and `fill_value` are unsupported."
             )
-        gather_map = vu.as_gather_map(
+        gather_map = ct.as_gather_map(
             cudf.core.column.as_column(indices),
             len(self),
             nullify=False,

@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 
 import cudf
-import cudf.core.validation_utils as vu
+import cudf.core.copy_types as ct
 from cudf._lib import groupby as libgroupby
 from cudf._lib.null_mask import bitmask_or
 from cudf._lib.reshape import interleave_columns
@@ -1916,7 +1916,7 @@ class GroupBy(Serializable, Reducible, Scannable):
         unsorted_idx = gb_cov_corr.index.repeat(num_cols)
         idx_sort_order = unsorted_idx._get_sorted_inds()
         sorted_idx = unsorted_idx._gather(
-            vu.as_gather_map(
+            ct.as_gather_map(
                 idx_sort_order,
                 len(unsorted_idx),
                 nullify=False,

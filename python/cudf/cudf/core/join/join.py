@@ -6,7 +6,7 @@ from typing import Any, ClassVar, List, Optional
 
 import cudf
 from cudf import _lib as libcudf
-from cudf.core import validation_utils as vu
+from cudf.core import copy_types as ct
 from cudf.core.join._join_helpers import (
     _coerce_to_tuple,
     _ColumnIndexer,
@@ -194,14 +194,14 @@ class Merge:
         if left_rows is None:
             left_result = cudf.DataFrame._from_data({})
         else:
-            left_rows = vu.as_gather_map(
+            left_rows = ct.as_gather_map(
                 left_rows, len(self.lhs), nullify=True, check_bounds=False
             )
             left_result = self.lhs._gather(left_rows, keep_index=keep_index)
         if right_rows is None:
             right_result = cudf.DataFrame._from_data({})
         else:
-            right_rows = vu.as_gather_map(
+            right_rows = ct.as_gather_map(
                 right_rows, len(self.rhs), nullify=True, check_bounds=False
             )
             right_result = self.rhs._gather(right_rows, keep_index=keep_index)
@@ -305,7 +305,7 @@ class Merge:
         if by:
             to_sort = cudf.DataFrame._from_data(dict(enumerate(by)))
             sort_order = cudf.core.column.as_column(to_sort.argsort())
-            order = vu.as_gather_map(
+            order = ct.as_gather_map(
                 sort_order, len(result), nullify=False, check_bounds=False
             )
             result = result._gather(

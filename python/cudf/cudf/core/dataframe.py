@@ -57,7 +57,7 @@ from cudf.api.types import (
     is_string_dtype,
     is_struct_dtype,
 )
-from cudf.core import column, df_protocol, reshape, validation_utils as vu
+from cudf.core import column, copy_types as ct, df_protocol, reshape
 from cudf.core.abc import Serializable
 from cudf.core.column import (
     CategoricalColumn,
@@ -437,7 +437,7 @@ class _DataFrameIlocIndexer(_DataFrameIndexer):
                 if is_bool_dtype(arg[0]):
                     df = columns_df._apply_boolean_mask(arg[0])
                 else:
-                    gather_map = vu.as_gather_map(
+                    gather_map = ct.as_gather_map(
                         arg[0],
                         len(columns_df),
                         nullify=False,
@@ -1391,7 +1391,7 @@ class DataFrame(IndexedFrame, Serializable, GetAttrGetItemMixin):
 
         if stride != 1:
             return self._gather(
-                vu.as_gather_map(
+                ct.as_gather_map(
                     cudf.core.column.arange(
                         start, stop=stop, step=stride, dtype=np.int32
                     ),
