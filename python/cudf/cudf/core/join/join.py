@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import warnings
-from typing import Any, ClassVar, List, Optional
+from typing import Any, ClassVar, List, Optional, Tuple
 
 import cudf
 from cudf import _lib as libcudf
@@ -160,6 +160,29 @@ class Merge:
             }
         )
 
+    def _join(
+        self,
+        left: list[cudf.core.column.ColumnBase],
+        right: list[cudf.core.column.ColumnBase],
+    ) -> Tuple[Optional[ct.GatherMap], Optional[ct.GatherMap]]:
+        left_rows, right_rows = self._joiner(
+            left,
+            right,
+            how=self.how,
+        )
+        return (
+            ct.as_gather_map(
+                left_rows, len(self.lhs), nullify=True, check_bounds=False
+            )
+            if left_rows is not None
+            else None,
+            ct.as_gather_map(
+                right_rows, len(self.rhs), nullify=True, check_bounds=False
+            )
+            if right_rows is not None
+            else None,
+        )
+
     def perform_merge(self) -> cudf.DataFrame:
         left_join_cols = []
         right_join_cols = []
@@ -184,26 +207,16 @@ class Merge:
             left_key.set(self.lhs, lcol_casted, validate=False)
             right_key.set(self.rhs, rcol_casted, validate=False)
 
-        left_rows, right_rows = self._joiner(
-            left_join_cols,
-            right_join_cols,
-            how=self.how,
-        )
+        left_rows, right_rows = self._join(left_join_cols, right_join_cols)
 
         keep_index = self._using_left_index or self._using_right_index
         if left_rows is None:
             left_result = cudf.DataFrame._from_data({})
         else:
-            left_rows = ct.as_gather_map(
-                left_rows, len(self.lhs), nullify=True, check_bounds=False
-            )
             left_result = self.lhs._gather(left_rows, keep_index=keep_index)
         if right_rows is None:
             right_result = cudf.DataFrame._from_data({})
         else:
-            right_rows = ct.as_gather_map(
-                right_rows, len(self.rhs), nullify=True, check_bounds=False
-            )
             right_result = self.rhs._gather(right_rows, keep_index=keep_index)
         result = cudf.DataFrame._from_data(
             *self._merge_results(left_result, right_result)
