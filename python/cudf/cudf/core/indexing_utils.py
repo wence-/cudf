@@ -5,16 +5,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, List, Tuple
 
+import numpy as np
 from typing_extensions import TypeAlias
 
 import cudf
 from cudf.api.types import (
+    _is_non_decimal_numeric_dtype,
     _is_scalar_or_zero_d_array,
     is_bool_dtype,
     is_integer,
     is_integer_dtype,
 )
 from cudf.core import copy_types as ct
+from cudf.utils.dtypes import to_cudf_compatible_scalar
 
 
 # Poor man's algebraic data types
@@ -248,3 +251,49 @@ def parse_row_iloc_indexer(key: Any, n: int, *, check_bounds) -> IndexingSpec:
                 "Cannot index by location "
                 f"with non-integer key of type {type(key)}"
             )
+
+
+@dataclass
+class ScalarValue:
+    value: cudf.Scalar
+
+
+@dataclass
+class ColumnValue:
+    value: cudf.core.column.ColumnBase
+
+
+ValueSpec: TypeAlias = ScalarValue | ColumnValue
+
+
+def parse_series_iloc_value(
+    key: IndexingSpec, value: Any, n: int, series_type: Any
+) -> ValueSpec:
+    if isinstance(value, list) and isinstance(series_type, cudf.ListDtype):
+        # No type-casting for lists
+        try:
+            return ScalarValue(cudf.Scalar(value, dtype=series_type))
+        except TypeError:
+            column = cudf.core.column.as_column(value)
+            if column.dtype != series_type:
+                raise ValueError()
+            return ColumnValue(column)
+    elif isinstance(value, dict) and isinstance(series_type, cudf.StructDtype):
+        # Or for floats
+        scalar = cudf.Scalar(value)
+        if scalar.dtype != series_type:
+            raise ValueError()
+        return ScalarValue(scalar)
+    if _is_scalar_or_zero_d_array(value):
+        value = to_cudf_compatible_scalar(value)
+        constructor = ScalarValue
+    else:
+        value = cudf.core.column.as_column(value)
+        constructor = ColumnValue
+    value_type = value.dtype
+    if _is_non_decimal_numeric_dtype(
+        value_type
+    ) and _is_non_decimal_numeric_dtype(series_type):
+        result_type = np.result_type(value_type, series_type)
+        value = value.astype(result_type)
+    return constructor(value)

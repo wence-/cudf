@@ -20,6 +20,7 @@ from typing_extensions import Self, assert_never
 
 import cudf
 from cudf import _lib as libcudf
+from cudf._lib.types import size_type_dtype
 from cudf._typing import (
     ColumnLike,
     DataFrameOrSeries,
@@ -195,42 +196,115 @@ class _SeriesIlocIndexer(_FrameIndexer):
 
     @_cudf_nvtx_annotate
     def __setitem__(self, key, value):
-        from cudf.core.column import column
+        indexing_spec = iu.parse_row_iloc_indexer(
+            iu.destructure_series_iloc_indexer(key, self._frame),
+            len(self._frame),
+            check_bounds=True,
+        )
+        value_spec = iu.parse_series_iloc_value(
+            indexing_spec, value, len(self._frame), self._frame.dtype
+        )
+        column = self._frame._column
+        value_type = value_spec.value.dtype
+        if value_type != column.dtype:
+            column = column.astype(value_type)
+        from IPython import embed
 
-        if isinstance(key, tuple):
-            key = list(key)
-
-        # coerce value into a scalar or column
-        if is_scalar(value):
-            value = to_cudf_compatible_scalar(value)
-        elif not (
-            isinstance(value, (list, dict))
-            and isinstance(
-                self._frame._column.dtype, (cudf.ListDtype, cudf.StructDtype)
-            )
-        ):
-            value = column.as_column(value)
-
-        if (
-            (
-                _is_non_decimal_numeric_dtype(self._frame._column.dtype)
-                or is_string_dtype(self._frame._column.dtype)
-            )
-            and hasattr(value, "dtype")
-            and _is_non_decimal_numeric_dtype(value.dtype)
-        ):
-            # normalize types if necessary:
-            # In contrast to Column.__setitem__ (which downcasts the value to
-            # the dtype of the column) here we upcast the series to the
-            # larger data type mimicking pandas
-            to_dtype = np.result_type(value.dtype, self._frame._column.dtype)
-            value = value.astype(to_dtype)
-            if to_dtype != self._frame._column.dtype:
-                self._frame._column._mimic_inplace(
-                    self._frame._column.astype(to_dtype), inplace=True
+        embed()
+        if isinstance(indexing_spec, iu.MaskIndexer):
+            try:
+                (result,) = libcudf.copying.boolean_mask_scatter(
+                    [value_spec.value], [column], indexing_spec.mask.column
                 )
+            except RuntimeError:
+                raise ValueError(
+                    "Provided value should be a scalar or have the same "
+                    "length as the number of True entries in the mask"
+                )
+            self._frame._column._mimic_inplace(
+                result._with_type_metadata(column.dtype), inplace=True
+            )
+            return
+        elif isinstance(indexing_spec, (iu.ScalarIndexer, iu.MapIndexer)):
+            if isinstance(value_spec, iu.ColumnValue) and len(
+                value_spec.value
+            ) != len(indexing_spec.gather_map.column):
+                raise ValueError(
+                    "rvalue must have same number of rows as scatter map"
+                )
+            (result,) = libcudf.copying.scatter(
+                [value_spec.value], indexing_spec.gather_map.column, [column]
+            )
+            self._frame._column._mimic_inplace(
+                result._with_type_metadata(column.dtype), inplace=True
+            )
+            return
+        elif isinstance(indexing_spec, iu.SliceIndexer):
+            start, stop, step = indexing_spec.slice.indices(len(self._frame))
+            n = len(range(start, stop, step))
+            if (
+                isinstance(value_spec, iu.ColumnValue)
+                and len(value_spec.value) != n
+            ):
+                raise ValueError(
+                    "rvalue must have same number of rows as slice"
+                )
+            scatter_map = cudf.core.column.arange(
+                start, stop, step, dtype=size_type_dtype
+            )
+            (result,) = libcudf.copying.scatter(
+                [value_spec.value], scatter_map, [column]
+            )
+            self._frame._column._mimic_inplace(
+                result._with_type_metadata(column.dtype), inplace=True
+            )
+            return
+        elif isinstance(indexing_spec, iu.EmptyIndexer):
+            if (
+                isinstance(value_spec, iu.ColumnValue)
+                and len(value_spec.value) != 0
+            ):
+                raise ValueError(
+                    "rvalue must have same number of rows as indexer"
+                )
+            return
+        assert_never(indexing_spec)
+        # from cudf.core.column import column
 
-        self._frame._column[key] = value
+        # if isinstance(key, tuple):
+        #     key = list(key)
+
+        # # coerce value into a scalar or column
+        # if is_scalar(value):
+        #     value = to_cudf_compatible_scalar(value)
+        # elif not (
+        #     isinstance(value, (list, dict))
+        #     and isinstance(
+        #         self._frame._column.dtype, (cudf.ListDtype, cudf.StructDtype)
+        #     )
+        # ):
+        #     value = column.as_column(value)
+
+        # if (
+        #     (
+        #         _is_non_decimal_numeric_dtype(self._frame._column.dtype)
+        #         or is_string_dtype(self._frame._column.dtype)
+        #     )
+        #     and hasattr(value, "dtype")
+        #     and _is_non_decimal_numeric_dtype(value.dtype)
+        # ):
+        #     # normalize types if necessary:
+        #     # In contrast to Column.__setitem__ (which downcasts the value to
+        #     # the dtype of the column) here we upcast the series to the
+        #     # larger data type mimicking pandas
+        #     to_dtype = np.result_type(value.dtype, self._frame._column.dtype)
+        #     value = value.astype(to_dtype)
+        #     if to_dtype != self._frame._column.dtype:
+        #         self._frame._column._mimic_inplace(
+        #             self._frame._column.astype(to_dtype), inplace=True
+        #         )
+
+        # self._frame._column[key] = value
 
 
 class _SeriesLocIndexer(_FrameIndexer):
