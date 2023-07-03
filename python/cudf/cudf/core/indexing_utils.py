@@ -464,6 +464,15 @@ def parse_row_loc_indexer(key: Any, index: cudf.BaseIndex) -> IndexingSpec:
             # categoricals correctly
             needle = key
             haystack = index._values
+            dtype_kinds = {needle.dtype.kind, haystack.dtype.kind}
+            try:
+                needle = needle.astype(haystack.dtype)
+            except ValueError:
+                raise KeyError("Dtype mismatch in label lookup")
+            # if dtype_kinds.issubset({"i", "u"}) or len(dtype_kinds) == 1:
+            #     needle = needle.astype(haystack.dtype)
+            # else:
+            #     raise KeyError("Dtype mismatch in label lookup")
             left, right = libcudf.join.join([needle], [haystack], how="inner")
             if len(left) != len(needle):
                 raise KeyError("Not all keys in index")
@@ -474,7 +483,7 @@ def parse_row_loc_indexer(key: Any, index: cudf.BaseIndex) -> IndexingSpec:
             )
             # stable sort only required for pandas-compat, arguably.
             (right,) = libcudf.sort.sort_by_key(
-                [right], [ordering], stable=True
+                [right], [ordering], [True], ["last"], stable=True
             )
             gather_map = ct.as_gather_map(
                 right, n, nullify=False, check_bounds=False
