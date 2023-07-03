@@ -449,8 +449,18 @@ def test_loc_setitem_add_column_partial_12801():
     assert_eq(df, cdf)
 
 
-@pytest.mark.xfail(reason="https://github.com/rapidsai/cudf/issues/13031")
-@pytest.mark.parametrize("other_index", [["1", "3", "2"], [1, 2, 3]])
+@pytest.mark.parametrize(
+    "other_index",
+    [
+        ["1", "3", "2"],
+        pytest.param(
+            [1, 2, 3],
+            marks=pytest.mark.xfail(
+                reason="https://github.com/rapidsai/cudf/issues/13031"
+            ),
+        ),
+    ],
+)
 def test_loc_setitem_series_index_alignment_13031(other_index):
     s = pd.Series([1, 2, 3], index=["1", "2", "3"])
     other = pd.Series([5, 6, 7], index=other_index)

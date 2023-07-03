@@ -238,8 +238,16 @@ class _SeriesLocIndexer(_FrameIndexer):
     Label-based selection
     """
 
+    _frame: Series
+
     @_cudf_nvtx_annotate
     def __getitem__(self, arg: Any) -> Union[ScalarLike, DataFrameOrSeries]:
+        if not isinstance(self._frame.index, cudf.MultiIndex):
+            indexing_spec = iu.parse_row_loc_indexer(
+                iu.destructure_series_loc_indexer(arg, self._frame),
+                self._frame.index,
+            )
+            return self._frame._getitem_preprocessed(indexing_spec)
         if isinstance(arg, pd.MultiIndex):
             arg = cudf.from_pandas(arg)
 
@@ -283,6 +291,11 @@ class _SeriesLocIndexer(_FrameIndexer):
         if isinstance(value, (pd.Series, cudf.Series)):
             value = cudf.Series(value)
             value = value._align_to_index(self._frame.index, how="right")
+            if isinstance(key, cudf.Series):
+                if is_bool_dtype(key.dtype):
+                    value = value._column.apply_boolean_mask(key._column)
+                elif is_integer_dtype(key.dtype):
+                    value = value._column.take(key._column)
         self._frame.iloc[key] = value
 
     def _loc_to_iloc(self, arg):
