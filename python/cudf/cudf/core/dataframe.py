@@ -237,6 +237,51 @@ class _DataFrameLocIndexer(_DataFrameIndexer):
 
     @_cudf_nvtx_annotate
     def _getitem_tuple_arg(self, arg):
+        if not isinstance(self._frame.index, cudf.MultiIndex):
+            row_key, (
+                col_is_scalar,
+                column_names,
+            ) = iu.destructure_dataframe_loc_indexer(arg, self._frame)
+            row_spec = iu.parse_row_loc_indexer(row_key, self._frame.index)
+            ca = self._frame._data
+            index = self._frame.index
+            if col_is_scalar:
+                s = Series._from_data(
+                    ca._select_by_names(column_names), index=index
+                )
+                return s._getitem_preprocessed(row_spec)
+            if column_names != list(self._frame._column_names):
+                frame = self._frame._from_data(
+                    ca._select_by_names(column_names), index=index
+                )
+            else:
+                frame = self._frame
+            if isinstance(row_spec, iu.MapIndexer):
+                return frame._gather(row_spec.key, keep_index=True)
+            elif isinstance(row_spec, iu.MaskIndexer):
+                return frame._apply_boolean_mask(row_spec.key, keep_index=True)
+            elif isinstance(row_spec, iu.SliceIndexer):
+                return frame._slice(row_spec.key)
+            elif isinstance(row_spec, iu.ScalarIndexer):
+                result = frame._gather(row_spec.key, keep_index=True)
+                # Attempt to turn into series.
+                try:
+                    # Behaviour difference from pandas, which will merrily
+                    # turn any heterogeneous set of columns into a series if
+                    # you only ask for one row.
+                    new_name = result.index[0]
+                    result = Series._concat(
+                        [result[name] for name in column_names],
+                        index=result.keys(),
+                    )
+                    result.name = new_name
+                    return result
+                except TypeError:
+                    # Couldn't find a common type, just return a 1xN dataframe.
+                    return result
+            elif isinstance(row_spec, iu.EmptyIndexer):
+                return frame._empty_like(keep_index=True)
+            assert_never(row_spec)
         from uuid import uuid4
 
         # Step 1: Gather columns
