@@ -369,9 +369,12 @@ def destructure_dataframe_loc_indexer(
     rows, cols = destructure_loc_key(key, frame)
     if cols is Ellipsis:
         cols = slice(None)
-    scalar = is_integer(cols)
     try:
-        # TODO here
+        scalar = cols in frame._data
+    except TypeError:
+        scalar = False
+    try:
+        # TODO here, we need to raise if the selection repeats names
         column_names: ColumnLabels = list(
             frame._data.select_by_label(cols).names
         )
@@ -517,7 +520,7 @@ def parse_row_loc_indexer(key: Any, index: cudf.BaseIndex) -> IndexingSpec:
             gather_map = ct.as_gather_map(
                 right, n, nullify=False, check_bounds=False
             )
-            if is_scalar:
+            if is_scalar and len(right) == 1:
                 return ScalarIndexer(gather_map)
             else:
                 return MapIndexer(gather_map)
