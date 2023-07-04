@@ -6,6 +6,7 @@ import warnings
 from dataclasses import dataclass
 from typing import Any, List, Tuple, Union
 
+import numpy as np
 from typing_extensions import TypeAlias
 
 import cudf
@@ -443,6 +444,8 @@ def parse_row_loc_indexer(key: Any, index: cudf.BaseIndex) -> IndexingSpec:
         return SliceIndexer(slice(None))
     elif isinstance(key, slice):
         # Convert label slice to index slice
+        # TODO: datetime index must be handled specially (unless we go for
+        # pandas 2 compatibility)
         parsed_key = index.find_label_range(key)
         if len(range(n)[parsed_key]) == 0:
             return EmptyIndexer()
@@ -450,9 +453,11 @@ def parse_row_loc_indexer(key: Any, index: cudf.BaseIndex) -> IndexingSpec:
             return SliceIndexer(parsed_key)
     else:
         is_scalar = _is_scalar_or_zero_d_array(key)
-        key = cudf.core.column.as_column(key)
+        if is_scalar and isinstance(key, np.ndarray):
+            key = cudf.core.column.as_column(key.item(), dtype=key.dtype)
+        else:
+            key = cudf.core.column.as_column(key)
         if isinstance(key, cudf.core.column.CategoricalColumn):
-            key
             key = key.as_numerical_column(key.codes.dtype)
         if is_bool_dtype(key.dtype):
             # The only easy one.
@@ -462,28 +467,52 @@ def parse_row_loc_indexer(key: Any, index: cudf.BaseIndex) -> IndexingSpec:
         else:
             # TODO promote to Index objects, so this can handle
             # categoricals correctly
+            if isinstance(index, cudf.DatetimeIndex):
+                key = cudf.core.column.as_column(key, dtype=index.dtype)
             needle = key
             haystack = index._values
-            dtype_kinds = {needle.dtype.kind, haystack.dtype.kind}
-            try:
+            needle_kind = needle.dtype.kind
+            haystack_kind = haystack.dtype.kind
+            if haystack_kind == "O":
+                try:
+                    needle = needle.astype(haystack.dtype)
+                except ValueError:
+                    raise KeyError("Dtype mismatch in label lookup")
+            elif needle_kind == haystack_kind or {
+                haystack_kind,
+                needle_kind,
+            }.issubset({"i", "u", "f"}):
                 needle = needle.astype(haystack.dtype)
-            except ValueError:
+            elif needle.dtype != haystack.dtype:
                 raise KeyError("Dtype mismatch in label lookup")
             # if dtype_kinds.issubset({"i", "u"}) or len(dtype_kinds) == 1:
             #     needle = needle.astype(haystack.dtype)
             # else:
             #     raise KeyError("Dtype mismatch in label lookup")
-            left, right = libcudf.join.join([needle], [haystack], how="inner")
-            if len(left) != len(needle):
-                raise KeyError("Not all keys in index")
-            (ordering,) = libcudf.copying.gather(
+            left, right = libcudf.join.join([needle], [haystack], how="left")
+            (left_order,) = libcudf.copying.gather(
                 [cudf.core.column.arange(len(needle), dtype=size_type_dtype)],
                 left,
                 nullify=False,
             )
-            # stable sort only required for pandas-compat, arguably.
+            (right_order,) = libcudf.copying.gather(
+                [
+                    cudf.core.column.arange(
+                        len(haystack), dtype=size_type_dtype
+                    )
+                ],
+                right,
+                nullify=True,
+            )
+
+            if right_order.null_count > 0:
+                raise KeyError("Not all keys in index")
             (right,) = libcudf.sort.sort_by_key(
-                [right], [ordering], [True], ["last"], stable=True
+                [right],
+                [left_order, right_order],
+                [True, True],
+                ["last", "last"],
+                stable=True,
             )
             gather_map = ct.as_gather_map(
                 right, n, nullify=False, check_bounds=False

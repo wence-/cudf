@@ -1253,6 +1253,7 @@ def test_iloc_categorical_index(index):
     assert_eq(expect, got)
 
 
+@pytest.mark.skip(reason="pandas 2 inconsistency")
 @pytest.mark.parametrize(
     "sli",
     [
