@@ -448,8 +448,12 @@ def parse_row_loc_indexer(key: Any, index: cudf.BaseIndex) -> IndexingSpec:
             key = cudf.core.column.as_column(key.item(), dtype=key.dtype)
         else:
             key = cudf.core.column.as_column(key)
-        if isinstance(key, cudf.core.column.CategoricalColumn):
-            key = key.as_numerical_column(key.codes.dtype)
+        if (
+            isinstance(key, cudf.core.column.CategoricalColumn)
+            and index.dtype != key.dtype
+        ):
+            # TODO: is this right?
+            key = key._get_decategorized_column()
         if is_bool_dtype(key.dtype):
             # The only easy one.
             return MaskIndexer(ct.as_boolean_mask(key, n))
@@ -512,3 +516,133 @@ def parse_row_loc_indexer(key: Any, index: cudf.BaseIndex) -> IndexingSpec:
                 return ScalarIndexer(gather_map)
             else:
                 return MapIndexer(gather_map)
+
+
+def parse_row_loc_indexer_multiindex(key: Any, index: cudf.MultiIndex):
+    # Idea, we bitmask & the sub-indexers together
+    # To do this, start with a bool mask of all True
+    # Apply from each indexer from right to left
+    # If we end up with
+    # What is the best way to do this?
+    # Slices can be intersected, bitmasks can be anded
+    # maps make things difficult.
+    # What produces a keyerror:
+    # - bitmasks that are not all False anded together to produce a False result
+    # - empty slices do not
+    # - maps do (if the keys to their left produce a subset that removes the labels)
+    # translate everything to indices
+    # then work left to right
+    # For the gathers, scatter True into a mask of False to produce a bitmask
+    # Need to check first for out of boundsness
+    n = len(index)
+    nlevel = index.nlevels
+    assert isinstance(key, tuple) and len(key) == nlevel
+    if any(
+        isinstance(subkey, slice)
+        and (isinstance(subkey.start, tuple) or isinstance(subkey.stop, tuple))
+        for subkey in key
+    ):
+        raise NotImplementedError(
+            "CuDF does not support multiindex slicing with tuple ranges"
+        )
+
+    new_keys = []
+    for subkey, subcolumn in zip(key, index._columns):
+        if isinstance(subkey, slice):
+            # Convert label slice to index slice
+            # TODO: datetime index must be handled specially (unless we go for
+            # pandas 2 compatibility)
+            parsed_key = index.find_label_range(key)
+            if len(range(n)[parsed_key]) == 0:
+                new_keys.append(EmptyIndexer())
+            else:
+                new_keys.append(SliceIndexer(parsed_key))
+        else:
+            is_scalar = _is_scalar_or_zero_d_array(key)
+            if is_scalar and isinstance(key, np.ndarray):
+                key = cudf.core.column.as_column(key.item(), dtype=key.dtype)
+            else:
+                key = cudf.core.column.as_column(key)
+            if (
+                isinstance(key, cudf.core.column.CategoricalColumn)
+                and index.dtype != key.dtype
+            ):
+                # TODO: is this right?
+                key = key._get_decategorized_column()
+            if is_bool_dtype(key.dtype):
+                # The only easy one.
+                new_keys.append(MaskIndexer(ct.as_boolean_mask(key, n)))
+            elif len(key) == 0:
+                new_keys.append(EmptyIndexer())
+            else:
+                # TODO promote to Index objects, so this can handle
+                # categoricals correctly
+                if isinstance(index, cudf.DatetimeIndex):
+                    key = cudf.core.column.as_column(key, dtype=index.dtype)
+                needle = key
+                haystack = index._values
+                needle_kind = needle.dtype.kind
+                haystack_kind = haystack.dtype.kind
+                if haystack_kind == "O":
+                    try:
+                        needle = needle.astype(haystack.dtype)
+                    except ValueError:
+                        raise KeyError("Dtype mismatch in label lookup")
+                elif needle_kind == haystack_kind or {
+                    haystack_kind,
+                    needle_kind,
+                }.issubset({"i", "u", "f"}):
+                    needle = needle.astype(haystack.dtype)
+                elif needle.dtype != haystack.dtype:
+                    raise KeyError("Dtype mismatch in label lookup")
+                # if dtype_kinds.issubset({"i", "u"}) or len(dtype_kinds) == 1:
+                #     needle = needle.astype(haystack.dtype)
+                # else:
+                #     raise KeyError("Dtype mismatch in label lookup")
+                left, right = libcudf.join.join(
+                    [needle], [haystack], how="left"
+                )
+                # TODO: This reordering isn't required if the way we
+                # handle gather is to construct a mask and scatter
+                # into it.
+                (left_order,) = libcudf.copying.gather(
+                    [
+                        cudf.core.column.arange(
+                            len(needle), dtype=size_type_dtype
+                        )
+                    ],
+                    left,
+                    nullify=False,
+                )
+                (right_order,) = libcudf.copying.gather(
+                    [
+                        cudf.core.column.arange(
+                            len(haystack), dtype=size_type_dtype
+                        )
+                    ],
+                    right,
+                    nullify=True,
+                )
+
+                if right_order.null_count > 0:
+                    raise KeyError("Not all keys in index")
+                (right,) = libcudf.sort.sort_by_key(
+                    [right],
+                    [left_order, right_order],
+                    [True, True],
+                    ["last", "last"],
+                    stable=True,
+                )
+                gather_map = ct.as_gather_map(
+                    right, n, nullify=False, check_bounds=False
+                )
+                if is_scalar and len(right) == 1:
+                    new_keys.append(ScalarIndexer(gather_map))
+                else:
+                    new_keys.append(MapIndexer(gather_map))
+    # Now we have all the keys as iloc pieces
+    # intersect slices
+    # construct bitmasks for gathermaps
+    # and bitmasks together
+    # slice away bitmasks using complement of intersected slices
+    # now we have a single boolean mask
