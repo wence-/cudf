@@ -1877,6 +1877,17 @@ def test_iloc_integer_categorical_issue_13013(indexer):
     assert_eq(expect, actual)
 
 
+@pytest.mark.parametrize("indexer", [[1], [0, 2]])
+def test_loc_integer_categorical_issue_13014(indexer):
+    # https://github.com/rapidsai/cudf/issues/13014
+    s = pd.Series([0, 1, 2])
+    index = pd.Categorical(indexer)
+    expect = s.loc[index]
+    c = cudf.from_pandas(s)
+    actual = c.loc[index]
+    assert_eq(expect, actual)
+
+
 def test_iloc_incorrect_boolean_mask_length_issue_13015():
     # https://github.com/rapidsai/cudf/issues/13015
     s = pd.Series([0, 1, 2])
@@ -1976,6 +1987,16 @@ def test_loc_missing_label_keyerror_issue_13379(index):
 
     with pytest.raises(KeyError):
         cdf.loc[[0, 5]]
+
+
+def test_loc_categorical_no_integer_fallback_issue_13653():
+    # https://github.com/rapidsai/cudf/issues/13653
+    s = cudf.Series(
+        [1, 2], index=cudf.CategoricalIndex([3, 4], categories=[3, 4])
+    )
+    actual = s.loc[3]
+    expect = s.to_pandas().loc[3]
+    assert_eq(actual, expect)
 
 
 class TestLocIndexWithOrder:
