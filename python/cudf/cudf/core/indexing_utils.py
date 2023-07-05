@@ -20,6 +20,7 @@ from cudf.api.types import (
     is_scalar,
 )
 from cudf.core import copy_types as ct
+from cudf.core.column_accessor import ColumnAccessor
 
 
 # Poor man's algebraic data types
@@ -341,7 +342,7 @@ def destructure_loc_key(
 
 def destructure_dataframe_loc_indexer(
     key: Any, frame: cudf.DataFrame
-) -> Tuple[Any, Tuple[bool, ColumnLabels]]:
+) -> Tuple[Any, Tuple[bool, ColumnAccessor]]:
     """Destructure an index key for DataFrame loc getitem.
 
     Parameters
@@ -374,11 +375,9 @@ def destructure_dataframe_loc_indexer(
     except TypeError:
         scalar = False
     try:
+        ca = frame._data.select_by_label(cols)
         # TODO here, we need to raise if the selection repeats names
-        column_names: ColumnLabels = list(
-            frame._data.select_by_label(cols).names
-        )
-        if len(set(column_names)) != len(column_names):
+        if False:
             raise NotImplementedError(
                 "cudf DataFrames do not support repeated column names"
             )
@@ -389,10 +388,10 @@ def destructure_dataframe_loc_indexer(
         )
     if scalar:
         assert (
-            len(column_names) == 1
+            len(ca) == 1
         ), "Scalar column indexer should not produce more than one column"
 
-    return (rows, (scalar, column_names))
+    return (rows, (scalar, ca))
 
 
 def destructure_series_loc_indexer(key: Any, frame: cudf.Series) -> Any:
