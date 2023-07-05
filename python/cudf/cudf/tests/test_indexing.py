@@ -1829,7 +1829,6 @@ def test_loc_repeated_index_label_issue_8693():
     assert_eq(expect, actual)
 
 
-@pytest.mark.xfail(reason="https://github.com/rapidsai/cudf/issues/13268")
 @pytest.mark.parametrize(
     "indexer", [(..., 0), (0, ...)], ids=["row_ellipsis", "column_ellipsis"]
 )
@@ -1966,7 +1965,6 @@ def test_loc_unsorted_index_slice_lookup_keyerror_issue_12833():
         cdf.loc[1:5]
 
 
-@pytest.mark.xfail(reason="https://github.com/rapidsai/cudf/issues/13379")
 @pytest.mark.parametrize("index", [range(5), list(range(5))])
 def test_loc_missing_label_keyerror_issue_13379(index):
     # https://github.com/rapidsai/cudf/issues/13379

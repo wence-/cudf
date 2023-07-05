@@ -36,7 +36,7 @@ from pandas._config import get_option
 from pandas.core.dtypes.common import is_float, is_integer
 from pandas.io.formats import console
 from pandas.io.formats.printing import pprint_thing
-from typing_extensions import assert_never
+from typing_extensions import Self, assert_never
 
 import cudf
 import cudf.core.common
@@ -238,15 +238,9 @@ class _DataFrameLocIndexer(_DataFrameIndexer):
                 ca,
             ) = iu.destructure_dataframe_loc_indexer(arg, self._frame)
             row_spec = iu.parse_row_loc_indexer(row_key, self._frame.index)
-            index = self._frame.index
-            if col_is_scalar:
-                s = Series._from_data(ca, index=index)
-                return s._getitem_preprocessed(row_spec)
-            if ca.names != self._frame._column_names:
-                frame = self._frame._from_data(ca, index=index)
-            else:
-                frame = self._frame
-            return frame._getitem_preprocessed(row_spec)
+            return self._frame._getitem_preprocessed(
+                row_spec, col_is_scalar, ca
+            )
         return super().__getitem__(arg)
 
     @_cudf_nvtx_annotate
@@ -428,25 +422,12 @@ class _DataFrameIlocIndexer(_DataFrameIndexer):
     def __getitem__(self, arg):
         row_key, (
             col_is_scalar,
-            column_names,
+            ca,
         ) = iu.destructure_dataframe_iloc_indexer(arg, self._frame)
         row_spec = iu.parse_row_iloc_indexer(
             row_key, len(self._frame), check_bounds=True
         )
-        ca = self._frame._data
-        index = self._frame.index
-        if col_is_scalar:
-            s = Series._from_data(
-                ca._select_by_names(column_names), index=index
-            )
-            return s._getitem_preprocessed(row_spec)
-        if column_names != list(self._frame._column_names):
-            frame = self._frame._from_data(
-                ca._select_by_names(column_names), index=index
-            )
-        else:
-            frame = self._frame
-        return frame._getitem_preprocessed(row_spec)
+        return self._frame._getitem_preprocessed(row_spec, col_is_scalar, ca)
 
     @_cudf_nvtx_annotate
     def _setitem_tuple_arg(self, key, value):
@@ -931,7 +912,7 @@ class DataFrame(IndexedFrame, Serializable, GetAttrGetItemMixin):
         data: MutableMapping,
         index: Optional[BaseIndex] = None,
         columns: Any = None,
-    ) -> DataFrame:
+    ) -> Self:
         out = super()._from_data(data=data, index=index)
         if columns is not None:
             out.columns = columns
@@ -1087,13 +1068,19 @@ class DataFrame(IndexedFrame, Serializable, GetAttrGetItemMixin):
     def _getitem_preprocessed(
         self,
         spec: iu.IndexingSpec,
-    ):
-        """Get a subset of rows given structured data
+        col_is_scalar: bool,
+        ca: ColumnAccessor,
+    ) -> Union[Self, Series]:
+        """Get a subset of rows and columns given structured data
 
         Parameters
         ----------
         spec
-            Indexing specification
+            Indexing specification for the rows
+        col_is_scalar
+            Was the indexer of the columns a scalar (return a Series)
+        ca
+            ColumnAccessor representing the subsetted column data
 
         Returns
         -------
@@ -1105,14 +1092,21 @@ class DataFrame(IndexedFrame, Serializable, GetAttrGetItemMixin):
         This function performs no bounds-checking or massaging of the
         inputs.
         """
+        if col_is_scalar:
+            series = Series._from_data(ca, index=self.index)
+            return series._getitem_preprocessed(spec)
+        if ca.names != self._data.names:
+            frame = self._from_data(ca, index=self.index)
+        else:
+            frame = self
         if isinstance(spec, iu.MapIndexer):
-            return self._gather(spec.key, keep_index=True)
+            return frame._gather(spec.key, keep_index=True)
         elif isinstance(spec, iu.MaskIndexer):
-            return self._apply_boolean_mask(spec.key, keep_index=True)
+            return frame._apply_boolean_mask(spec.key, keep_index=True)
         elif isinstance(spec, iu.SliceIndexer):
-            return self._slice(spec.key)
+            return frame._slice(spec.key)
         elif isinstance(spec, iu.ScalarIndexer):
-            result = self._gather(spec.key, keep_index=True)
+            result = frame._gather(spec.key, keep_index=True)
             # Attempt to turn into series.
             try:
                 # Behaviour difference from pandas, which will merrily
@@ -1120,7 +1114,7 @@ class DataFrame(IndexedFrame, Serializable, GetAttrGetItemMixin):
                 # you only ask for one row.
                 new_name = result.index[0]
                 result = Series._concat(
-                    [result[name] for name in self._data.names],
+                    [result[name] for name in frame._data.names],
                     index=result.keys(),
                 )
                 result.name = new_name
@@ -1129,7 +1123,7 @@ class DataFrame(IndexedFrame, Serializable, GetAttrGetItemMixin):
                 # Couldn't find a common type, just return a 1xN dataframe.
                 return result
         elif isinstance(spec, iu.EmptyIndexer):
-            return self._empty_like(keep_index=True)
+            return frame._empty_like(keep_index=True)
         assert_never(spec)
 
     @_cudf_nvtx_annotate

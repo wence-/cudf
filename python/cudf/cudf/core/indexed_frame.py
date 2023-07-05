@@ -1743,7 +1743,7 @@ class IndexedFrame(Frame):
         self,
         gather_map: ct.GatherMap,
         keep_index=True,
-    ):
+    ) -> Self:
         """Gather rows of frame specified by indices in `gather_map`.
 
         Maintain the index if keep_index is True.
