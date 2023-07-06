@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import operator
 import warnings
 from dataclasses import dataclass
+from functools import partial, reduce
 from typing import Any, List, Tuple, Union
 
 import numpy as np
@@ -640,9 +642,145 @@ def parse_row_loc_indexer_multiindex(key: Any, index: cudf.MultiIndex):
                     new_keys.append(ScalarIndexer(gather_map))
                 else:
                     new_keys.append(MapIndexer(gather_map))
+    return combine_keys(new_keys, index)
+
+
+def combine_keys(keys: list[IndexingSpec], index):
     # Now we have all the keys as iloc pieces
     # intersect slices
     # construct bitmasks for gathermaps
     # and bitmasks together
     # slice away bitmasks using complement of intersected slices
     # now we have a single boolean mask
+    # Pandas does "approximately" the above. This doesn't preserve the
+    # reordering induced by list-like gather maps, nor does it handle
+    # slice reordering (with negative steps).
+    # Possible plan: do the right and proper thing when there is an
+    # unambiguous result (basically boolean masks or slices with step
+    # 1 strides), or "single-level" indexing.
+    # Raise AmbiguousIndexError otherwise
+
+    boolean_masks = list(k for k in keys if isinstance(k, MaskIndexer))
+    gather_maps = list(
+        k for k in keys if isinstance(k, (MapIndexer, ScalarIndexer))
+    )
+    slices = list(k for k in keys if isinstance(k, SliceIndexer))
+    empty = list(k for k in keys if isinstance(k, EmptyIndexer))
+    if empty:
+        return EmptyIndexer()
+    slice_intersection = intersect_slices(len(index), *(s.key for s in slices))
+    if len(slice_intersection) == 0:
+        return EmptyIndexer()
+    if slice_intersection == range(len(index)):
+        slicer = None
+    else:
+        slicer = slice(
+            slice_intersection.start,
+            slice_intersection.stop,
+            slice_intersection.step,
+        )
+    if boolean_masks:
+        mask = reduce(
+            partial(libcudf.binaryop.binaryop, op="__l_and__", dtype=bool),
+            (k.key.column for k in boolean_masks),
+        )
+        all_false = not mask.sum()
+        if all_false and any(k.key.column.sum() for k in boolean_masks):
+            # Masks and together to give no results, but individual masks wanted something
+            raise KeyError
+        if slicer:
+            mask = mask.slice(slicer.start, slicer.stop, slicer.step)
+            indices = cudf.core.column.arange(
+                slicer.start, slicer.stop, slicer.step, dtype=size_type_dtype
+            )
+            (indices,) = libcudf.stream_compaction.apply_boolean_mask(
+                [indices], mask
+            )
+            if not all_false and len(indices) == 0:
+                # Sliced part of masked indices is all false but we have a not all false mask
+                raise KeyError
+            gather_maps.append(
+                MapIndexer(
+                    ct.as_gather_map(
+                        indices, len(index), nullify=False, check_bounds=False
+                    )
+                )
+            )
+            boolean_masks = []
+        else:
+            boolean_masks = [MaskIndexer(ct.as_boolean_mask(mask, len(index)))]
+    if gather_maps:
+        # If we want pandas-like behaviour we can dedup and just use
+        # the gather maps to populate bitmasks which we can and
+        # together.
+        # If we want "consistent with non-multiindex" maps then we
+        # must compute the ordered set intersection of all the gather
+        # maps
+        # If there is a slice this adds another constraint to the intersection problem
+        to_intersect = list(k.key.column for k in gather_maps)
+        if slicer:
+            to_intersect.append(
+                cudf.core.column.arange(
+                    slicer.start,
+                    slicer.stop,
+                    slicer.step,
+                    dtype=size_type_dtype,
+                )
+            )
+
+
+def extended_euclid(a: int, b: int) -> Tuple[int, int, int]:
+    """
+    Compute an integer pair (x, y) such that
+
+    a x + b y = gcd(x, y)
+
+    Per Bézout's theorem, there are two such "small" pairs, and this
+    algorithm is guaranteed to find one of them.
+
+    Returns
+    -------
+    tuple
+        x, y, gcd
+    """
+    old_r, r = a, b
+    old_s, s = 1, 0
+    old_t, t = 0, 1
+    while r != 0:
+        quotient = old_r // r
+        old_r, r = r, old_r - quotient * r
+        old_s, s = s, old_s - quotient * s
+        old_t, t = t, old_t - quotient * t
+    return (old_s, old_t, old_r)
+
+
+def intersect_slices(n: int, *slices: slice) -> range:
+    if not slices:
+        return range(n)
+    # Normalise to positive step ranges
+    slices = tuple(s if s.step else slice(s.start, s.stop, 1) for s in slices)
+    step_sign = 1 - 2 * (reduce(operator.mul, (s.step for s in slices)) < 0)
+    ranges = list(
+        range(n)[s] if s.step > 0 else range(n)[s][::-1] for s in slices
+    )
+    if all(r.step == 1 for r in ranges):
+        # Ranges are dense, so we can just compute overlaps
+        lo = max(r.start for r in ranges)
+        hi = min(r.stop for r in ranges)
+        return range(lo, hi, 1)[::step_sign]
+    result = ranges.pop()
+    while ranges:
+        current = ranges.pop()
+        s, _, gcd = extended_euclid(result.step, current.step)
+        if (result.start - current.start) % gcd:
+            # Points will never intersect
+            return range(0)[::step_sign]
+        start = (
+            result.start
+            + (current.start - result.start) * result.step // gcd * s
+        )
+        step = result.step * current.step // gcd
+        nstep = -((start - max(result.start, current.start)) // step)
+        start = start + step * nstep
+        result = range(start, min(result.stop, current.stop), step)
+    return result[::step_sign]
