@@ -57,13 +57,7 @@ from cudf.api.types import (
     is_string_dtype,
     is_struct_dtype,
 )
-from cudf.core import (
-    column,
-    copy_types as ct,
-    df_protocol,
-    indexing_utils as iu,
-    reshape,
-)
+from cudf.core import column, df_protocol, indexing_utils, reshape
 from cudf.core.abc import Serializable
 from cudf.core.column import (
     CategoricalColumn,
@@ -75,6 +69,7 @@ from cudf.core.column import (
     concat_columns,
 )
 from cudf.core.column_accessor import ColumnAccessor
+from cudf.core.copy_types import BooleanMask
 from cudf.core.groupby.groupby import DataFrameGroupBy, groupby_doc_template
 from cudf.core.index import BaseIndex, RangeIndex, _index_from_data, as_index
 from cudf.core.indexed_frame import (
@@ -236,8 +231,12 @@ class _DataFrameLocIndexer(_DataFrameIndexer):
             row_key, (
                 col_is_scalar,
                 ca,
-            ) = iu.destructure_dataframe_loc_indexer(arg, self._frame)
-            row_spec = iu.parse_row_loc_indexer(row_key, self._frame.index)
+            ) = indexing_utils.destructure_dataframe_loc_indexer(
+                arg, self._frame
+            )
+            row_spec = indexing_utils.parse_row_loc_indexer(
+                row_key, self._frame.index
+            )
             return self._frame._getitem_preprocessed(
                 row_spec, col_is_scalar, ca
             )
@@ -284,7 +283,9 @@ class _DataFrameLocIndexer(_DataFrameIndexer):
                     df = columns_df._slice(out)
                 else:
                     df = columns_df._apply_boolean_mask(
-                        ct.as_boolean_mask(out, len(columns_df))
+                        BooleanMask.from_column_unchecked(
+                            cudf.core.column.as_column(out)
+                        )
                     )
             else:
                 tmp_arg = arg
@@ -299,7 +300,7 @@ class _DataFrameLocIndexer(_DataFrameIndexer):
 
                 if is_bool_dtype(tmp_arg[0]):
                     df = columns_df._apply_boolean_mask(
-                        ct.as_boolean_mask(tmp_arg[0], len(columns_df))
+                        BooleanMask(tmp_arg[0], len(columns_df))
                     )
                 else:
                     tmp_col_name = str(uuid4())
@@ -307,12 +308,16 @@ class _DataFrameLocIndexer(_DataFrameIndexer):
                         {tmp_col_name: column.arange(len(tmp_arg[0]))},
                         index=as_index(tmp_arg[0]),
                     )
+                    cantor_name = "_" + "_".join(
+                        map(str, columns_df._data.names)
+                    )
+                    columns_df[cantor_name] = column.arange(len(columns_df))
                     df = other_df.join(columns_df, how="inner")
                     # as join is not assigning any names to index,
                     # update it over here
                     df.index.name = columns_df.index.name
-                    df = df.sort_values(tmp_col_name)
-                    df.drop(columns=[tmp_col_name], inplace=True)
+                    df = df.sort_values(by=[tmp_col_name, cantor_name])
+                    df.drop(columns=[tmp_col_name, cantor_name], inplace=True)
                     # There were no indices found
                     if len(df) == 0:
                         raise KeyError(arg)
@@ -423,9 +428,9 @@ class _DataFrameIlocIndexer(_DataFrameIndexer):
         row_key, (
             col_is_scalar,
             ca,
-        ) = iu.destructure_dataframe_iloc_indexer(arg, self._frame)
-        row_spec = iu.parse_row_iloc_indexer(
-            row_key, len(self._frame), check_bounds=True
+        ) = indexing_utils.destructure_dataframe_iloc_indexer(arg, self._frame)
+        row_spec = indexing_utils.parse_row_iloc_indexer(
+            row_key, len(self._frame)
         )
         return self._frame._getitem_preprocessed(row_spec, col_is_scalar, ca)
 
@@ -1067,7 +1072,7 @@ class DataFrame(IndexedFrame, Serializable, GetAttrGetItemMixin):
 
     def _getitem_preprocessed(
         self,
-        spec: iu.IndexingSpec,
+        spec: indexing_utils.IndexingSpec,
         col_is_scalar: bool,
         ca: ColumnAccessor,
     ) -> Union[Self, Series]:
@@ -1099,13 +1104,13 @@ class DataFrame(IndexedFrame, Serializable, GetAttrGetItemMixin):
             frame = self._from_data(ca, index=self.index)
         else:
             frame = self
-        if isinstance(spec, iu.MapIndexer):
+        if isinstance(spec, indexing_utils.MapIndexer):
             return frame._gather(spec.key, keep_index=True)
-        elif isinstance(spec, iu.MaskIndexer):
+        elif isinstance(spec, indexing_utils.MaskIndexer):
             return frame._apply_boolean_mask(spec.key, keep_index=True)
-        elif isinstance(spec, iu.SliceIndexer):
+        elif isinstance(spec, indexing_utils.SliceIndexer):
             return frame._slice(spec.key)
-        elif isinstance(spec, iu.ScalarIndexer):
+        elif isinstance(spec, indexing_utils.ScalarIndexer):
             result = frame._gather(spec.key, keep_index=True)
             # Attempt to turn into series.
             try:
@@ -1122,7 +1127,7 @@ class DataFrame(IndexedFrame, Serializable, GetAttrGetItemMixin):
             except TypeError:
                 # Couldn't find a common type, just return a 1xN dataframe.
                 return result
-        elif isinstance(spec, iu.EmptyIndexer):
+        elif isinstance(spec, indexing_utils.EmptyIndexer):
             return frame._empty_like(keep_index=True)
         assert_never(spec)
 
@@ -1208,9 +1213,7 @@ class DataFrame(IndexedFrame, Serializable, GetAttrGetItemMixin):
                     dtype = "float64"
                 mask = pd.Series(mask, dtype=dtype)
             if mask.dtype == "bool":
-                return self._apply_boolean_mask(
-                    ct.as_boolean_mask(mask, len(self))
-                )
+                return self._apply_boolean_mask(BooleanMask(mask, len(self)))
             else:
                 return self._get_columns_by_label(mask)
         elif isinstance(arg, DataFrame):
@@ -4090,6 +4093,12 @@ class DataFrame(IndexedFrame, Serializable, GetAttrGetItemMixin):
         ...          local_dict={'search_date': search_date2})
            datetimes
         1 2018-10-08
+
+        .. pandas-compat::
+            **DataFrame.query**
+
+            One difference from pandas is that ``query`` currently only
+            supports numeric, datetime, timedelta, or bool dtypes.
         """
         # can't use `annotate` decorator here as we inspect the calling
         # environment.
@@ -4116,7 +4125,7 @@ class DataFrame(IndexedFrame, Serializable, GetAttrGetItemMixin):
             # Run query
             boolmask = queryutils.query_execute(self, expr, callenv)
             return self._apply_boolean_mask(
-                ct.as_boolean_mask(boolmask, len(self))
+                BooleanMask.from_column_unchecked(boolmask)
             )
 
     @_cudf_nvtx_annotate

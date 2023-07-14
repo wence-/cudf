@@ -685,9 +685,6 @@ def test_dataframe_iloc_tuple():
     assert_eq(gdf.iloc[:, -1], pdf.iloc[:, -1])
 
 
-@pytest.mark.xfail(
-    raises=IndexError, reason="positional indexers are out-of-bounds"
-)
 def test_dataframe_iloc_index_error():
     gdf = cudf.DataFrame()
     nelem = 123
@@ -700,11 +697,10 @@ def test_dataframe_iloc_index_error():
     pdf["a"] = ha
     pdf["b"] = hb
 
-    def assert_col(g, p):
-        np.testing.assert_equal(g["a"].to_numpy(), p["a"])
-        np.testing.assert_equal(g["b"].to_numpy(), p["b"])
-
-    assert_col(gdf.iloc[nelem * 2], pdf.iloc[nelem * 2])
+    with pytest.raises(IndexError):
+        pdf.iloc[nelem * 2]
+    with pytest.raises(IndexError):
+        gdf.iloc[nelem * 2]
 
 
 @pytest.mark.parametrize("ntake", [0, 1, 10, 123, 122, 200])
@@ -1913,10 +1909,8 @@ def test_iloc_repeated_column_label_issue_13266():
     df = pd.DataFrame(np.arange(4).reshape(2, 2))
     cdf = cudf.from_pandas(df)
 
-    expect = df.iloc[:, [0, 1, 0]]
     with pytest.raises(NotImplementedError):
-        actual = cdf.iloc[:, [0, 1, 0]]
-        assert_eq(expect, actual)
+        cdf.iloc[:, [0, 1, 0]]
 
 
 @pytest.mark.parametrize(
@@ -1996,6 +1990,20 @@ def test_loc_categorical_no_integer_fallback_issue_13653():
     )
     actual = s.loc[3]
     expect = s.to_pandas().loc[3]
+    assert_eq(actual, expect)
+
+
+@pytest.mark.parametrize("series", [True, False], ids=["Series", "DataFrame"])
+def test_loc_repeated_label_ordering_issue_13658(series):
+    # https://github.com/rapidsai/cudf/issues/13658
+    values = range(2048)
+    index = [1 for _ in values]
+    if series:
+        frame = cudf.Series(values, index=index)
+    else:
+        frame = cudf.DataFrame({"a": values}, index=index)
+    expect = frame.to_pandas().loc[[1]]
+    actual = frame.loc[[1]]
     assert_eq(actual, expect)
 
 

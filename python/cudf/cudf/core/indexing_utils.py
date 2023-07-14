@@ -6,7 +6,7 @@ import operator
 import warnings
 from dataclasses import dataclass
 from functools import partial, reduce
-from typing import Any, Callable, List, Tuple, Union
+from typing import Any, List, Tuple, Union
 
 import numpy as np
 from typing_extensions import TypeAlias
@@ -21,43 +21,42 @@ from cudf.api.types import (
     is_integer_dtype,
     is_scalar,
 )
-from cudf.core import copy_types as ct
 from cudf.core.column_accessor import ColumnAccessor
+from cudf.core.copy_types import BooleanMask, GatherMap
 
 
-# Poor man's algebraic data types
 class EmptyIndexer:
-    """An indexer that will produce an empty result"""
+    """An indexer that will produce an empty result."""
 
     pass
 
 
 @dataclass
 class MapIndexer:
-    """An indexer for a gather map"""
+    """An indexer for a gather map."""
 
-    key: ct.GatherMap
+    key: GatherMap
 
 
 @dataclass
 class MaskIndexer:
-    """An indexer for a boolean mask"""
+    """An indexer for a boolean mask."""
 
-    key: ct.BooleanMask
+    key: BooleanMask
 
 
 @dataclass
 class SliceIndexer:
-    """An indexer for a slice"""
+    """An indexer for a slice."""
 
     key: slice
 
 
 @dataclass
 class ScalarIndexer:
-    """An indexer for a scalar value"""
+    """An indexer for a scalar value."""
 
-    key: ct.GatherMap
+    key: GatherMap
 
 
 IndexingSpec: TypeAlias = Union[
@@ -71,7 +70,7 @@ def destructure_iloc_key(
     key: Any, frame: Union[cudf.Series, cudf.DataFrame]
 ) -> tuple[Any, ...]:
     """
-    Destructure a potentially tuple-typed key into row and column indexers
+    Destructure a potentially tuple-typed key into row and column indexers.
 
     Tuple arguments to iloc indexing are treated specially. They are
     picked apart into indexers for the row and column. If the number
@@ -103,7 +102,8 @@ def destructure_iloc_key(
 
     Returns
     -------
-    tuple of indexers with length equal to the dimension of the frame
+    tuple
+        Indexers with length equal to the dimension of the frame
 
     Raises
     ------
@@ -115,8 +115,10 @@ def destructure_iloc_key(
         # Key potentially indexes rows and columns, slice-expand to
         # shape of frame
         indexers = key + (slice(None),) * (n - len(key))
-        if (ni := len(indexers)) > n:
-            raise IndexError(f"Too many indexers: got {ni} expected {n}")
+        if len(indexers) > n:
+            raise IndexError(
+                f"Too many indexers: got {len(indexers)} expected {n}"
+            )
     else:
         # Key indexes rows, slice-expand to shape of frame
         indexers = (key, *(slice(None),) * (n - 1))
@@ -171,7 +173,7 @@ def destructure_dataframe_iloc_indexer(
             len(ca) == 1
         ), "Scalar column indexer should not produce more than one column"
 
-    return (rows, (scalar, ca))
+    return rows, (scalar, ca)
 
 
 def destructure_series_iloc_indexer(key: Any, frame: cudf.Series) -> Any:
@@ -192,9 +194,9 @@ def destructure_series_iloc_indexer(key: Any, frame: cudf.Series) -> Any:
     return rows
 
 
-def parse_row_iloc_indexer(key: Any, n: int, *, check_bounds) -> IndexingSpec:
+def parse_row_iloc_indexer(key: Any, n: int) -> IndexingSpec:
     """
-    Normalize and produce structured information about a row indexer
+    Normalize and produce structured information about a row indexer.
 
     Given a row indexer that has already been destructured by
     :func:`destructure_iloc_key`, inspect further and produce structured
@@ -206,9 +208,6 @@ def parse_row_iloc_indexer(key: Any, n: int, *, check_bounds) -> IndexingSpec:
         Suitably destructured key for row indexing
     n
         Length of frame to index
-    check_bounds
-        If True, perform bounds checking of the key if it is a gather
-        map.
 
     Returns
     -------
@@ -228,23 +227,17 @@ def parse_row_iloc_indexer(key: Any, n: int, *, check_bounds) -> IndexingSpec:
     elif isinstance(key, slice):
         return SliceIndexer(key)
     elif _is_scalar_or_zero_d_array(key):
-        return ScalarIndexer(
-            ct.as_gather_map(key, n, nullify=False, check_bounds=check_bounds)
-        )
+        return ScalarIndexer(GatherMap(key, n, nullify=False))
     else:
         key = cudf.core.column.as_column(key)
         if isinstance(key, cudf.core.column.CategoricalColumn):
             key = key.as_numerical_column(key.codes.dtype)
         if is_bool_dtype(key.dtype):
-            return MaskIndexer(ct.as_boolean_mask(key, n))
+            return MaskIndexer(BooleanMask(key, n))
         elif len(key) == 0:
             return EmptyIndexer()
         elif is_integer_dtype(key.dtype):
-            return MapIndexer(
-                ct.as_gather_map(
-                    key, n, nullify=False, check_bounds=check_bounds
-                )
-            )
+            return MapIndexer(GatherMap(key, n, nullify=False))
         else:
             raise TypeError(
                 "Cannot index by location "
@@ -456,7 +449,7 @@ def parse_single_loc_key(
             key = key._get_decategorized_column()
         if is_bool_dtype(key.dtype):
             # The only easy one.
-            return MaskIndexer(ct.as_boolean_mask(key, n))
+            return MaskIndexer(BooleanMask(key, n))
         elif len(key) == 0:
             return EmptyIndexer()
         else:
@@ -486,8 +479,8 @@ def parse_single_loc_key(
             map_ = ordered_gather_map(
                 needle, haystack, how="left", nullify_right=True
             )
-            gather_map = ct.as_gather_map(
-                map_, n, nullify=False, check_bounds=False
+            gather_map = GatherMap.from_column_unchecked(
+                map_, n, nullify=False
             )
             if is_scalar and len(map_) == 1:
                 return ScalarIndexer(gather_map)
@@ -539,14 +532,16 @@ def parse_row_loc_indexer_multiindex(key: Any, index: cudf.MultiIndex):
     # Slices can be intersected, bitmasks can be anded
     # maps make things difficult.
     # What produces a keyerror:
-    # - bitmasks that are not all False anded together to produce a False result
+    # - bitmasks that are not all False anded together to produce a False
+    #   result
     # - empty slices do not
-    # - maps do (if the keys to their left produce a subset that removes the labels)
+    # - maps do (if the keys to their left produce a subset that removes
+    #   the labels)
     # translate everything to indices
     # then work left to right
-    # For the gathers, scatter True into a mask of False to produce a bitmask
+    # For the gathers, scatter True into a mask of False to produce
+    # a bitmask
     # Need to check first for out of boundsness
-    n = len(index)
     nlevel = index.nlevels
     assert isinstance(key, tuple) and len(key) == nlevel
     if any(
@@ -608,7 +603,8 @@ def combine_keys(keys: list[IndexingSpec], index):
         )
         all_false = not mask.sum()
         if all_false and any(k.key.column.sum() for k in boolean_masks):
-            # Masks and together to give no results, but individual masks wanted something
+            # Masks and together to give no results, but individual
+            # masks wanted something
             raise KeyError
         if slicer:
             mask = mask.slice(slicer.start, slicer.stop, slicer.step)
@@ -619,18 +615,21 @@ def combine_keys(keys: list[IndexingSpec], index):
                 [indices], mask
             )
             if not all_false and len(indices) == 0:
-                # Sliced part of masked indices is all false but we have a not all false mask
+                # Sliced part of masked indices is all false but we
+                # have a not all false mask
                 raise KeyError
             gather_maps.append(
                 MapIndexer(
-                    ct.as_gather_map(
-                        indices, len(index), nullify=False, check_bounds=False
+                    GatherMap.from_column_unchecked(
+                        indices, len(index), nullify=False
                     )
                 )
             )
             boolean_masks = []
         else:
-            boolean_masks = [MaskIndexer(ct.as_boolean_mask(mask, len(index)))]
+            boolean_masks = [
+                MaskIndexer(BooleanMask.from_column_unchecked(mask))
+            ]
     if gather_maps:
         # If we want pandas-like behaviour we can dedup and just use
         # the gather maps to populate bitmasks which we can and
@@ -638,8 +637,10 @@ def combine_keys(keys: list[IndexingSpec], index):
         # If we want "consistent with non-multiindex" maps then we
         # must compute the ordered set intersection of all the gather
         # maps
-        # If this intersection (either way) is empty then we must raise KeyError
-        # If there is a slice this adds another constraint to the intersection problem
+        # If this intersection (either way) is empty then we must
+        # raise KeyError
+        # If there is a slice this adds another constraint to the
+        # intersection problem
         to_intersect = list(k.key.column for k in gather_maps)[::-1]
         intersection = to_intersect.pop()
         while to_intersect:
@@ -674,8 +675,8 @@ def combine_keys(keys: list[IndexingSpec], index):
                 how="inner",
                 nullify_right=False,
             )
-        gather_map = ct.as_gather_map(
-            intersection, len(index), nullify=False, check_bounds=False
+        gather_map = GatherMap.from_column_unchecked(
+            intersection, len(index), nullify=False
         )
         if (
             any(isinstance(k, ScalarIndexer) for k in gather_maps)

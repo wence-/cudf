@@ -49,11 +49,11 @@ from cudf.api.types import (
     is_list_like,
     is_scalar,
 )
-from cudf.core import copy_types as ct
 from cudf.core._base_index import BaseIndex
 from cudf.core.buffer import acquire_spill_lock
 from cudf.core.column import ColumnBase, as_column, full
 from cudf.core.column_accessor import ColumnAccessor
+from cudf.core.copy_types import BooleanMask, GatherMap
 from cudf.core.dtypes import ListDtype
 from cudf.core.frame import Frame
 from cudf.core.groupby.groupby import GroupBy
@@ -190,7 +190,7 @@ def _indices_from_labels(obj, labels):
     rhs = cudf.DataFrame(
         {"_": cudf.core.column.arange(len(obj))}, index=obj.index
     )
-    return lhs.join(rhs).sort_values("__")["_"]
+    return lhs.join(rhs).sort_values(by=["__", "_"])["_"]
 
 
 def _get_label_range_or_mask(index, start, stop, step):
@@ -1005,8 +1005,10 @@ class IndexedFrame(Frame):
         if not isinstance(data._index, cudf.RangeIndex):
             perm_sort = data._index.argsort()
             data = data._gather(
-                ct.as_gather_map(
-                    perm_sort, len(data), nullify=False, check_bounds=False
+                GatherMap.from_column_unchecked(
+                    cudf.core.column.as_column(perm_sort),
+                    len(data),
+                    nullify=False,
                 )
             )
 
@@ -1026,11 +1028,10 @@ class IndexedFrame(Frame):
             if isinstance(data._index, cudf.RangeIndex)
             # TODO: This should be a scatter, avoiding an argsort.
             else result._gather(
-                ct.as_gather_map(
-                    perm_sort.argsort(),
+                GatherMap.from_column_unchecked(
+                    cudf.core.column.as_column(perm_sort.argsort()),
                     len(result),
                     nullify=False,
-                    check_bounds=False,
                 )
             )
         )
@@ -1558,8 +1559,8 @@ class IndexedFrame(Frame):
                     ascending=ascending, na_position=na_position
                 )
                 out = self._gather(
-                    ct.as_gather_map(
-                        inds, len(self), nullify=False, check_bounds=False
+                    GatherMap.from_column_unchecked(
+                        inds, len(self), nullify=False
                     )
                 )
                 # TODO: frame factory function should handle multilevel column
@@ -1578,8 +1579,10 @@ class IndexedFrame(Frame):
                     ascending=ascending, na_position=na_position
                 )
                 out = self._gather(
-                    ct.as_gather_map(
-                        inds, len(self), nullify=False, check_bounds=False
+                    GatherMap.from_column_unchecked(
+                        cudf.core.column.as_column(inds),
+                        len(self),
+                        nullify=False,
                     )
                 )
                 if (
@@ -1741,7 +1744,7 @@ class IndexedFrame(Frame):
 
     def _gather(
         self,
-        gather_map: ct.GatherMap,
+        gather_map: GatherMap,
         keep_index=True,
     ) -> Self:
         """Gather rows of frame specified by indices in `gather_map`.
@@ -1766,8 +1769,8 @@ class IndexedFrame(Frame):
             self._index.names if keep_index else None,
         )
 
-    def _slice(self, arg: slice, keep_index=True) -> Self:
-        """Slice a frame
+    def _slice(self, arg: slice, keep_index: bool = True) -> Self:
+        """Slice a frame.
 
         Parameters
         ----------
@@ -1792,8 +1795,10 @@ class IndexedFrame(Frame):
         has_range_index = isinstance(index, RangeIndex)
         if len(range(start, stop, stride)) == 0:
             # Avoid materialising the range index column
-            result = self._empty_like(keep_index=not has_range_index)
-            if has_range_index:
+            result = self._empty_like(
+                keep_index=keep_index and not has_range_index
+            )
+            if keep_index and has_range_index:
                 lo = index.start + start * index.step
                 hi = index.start + stop * index.step
                 step = index.step * stride
@@ -1804,9 +1809,12 @@ class IndexedFrame(Frame):
         if start < 0:
             start = start + num_rows
 
-        # Decreasing slices that terminates at -1, such as slice(4, -1, -1),
-        # has end index of 0, The check below makes sure -1 is not wrapped
-        # to `-1 + num_rows`.
+        # At this point, we have converted slice arguments into
+        # indices that no longer wrap around.
+        # For example slice(4, None, -1) will produce the
+        # start, stop, stride tuple (4, -1, -1)
+        # This check makes sure -1 is not wrapped (again) to
+        # produce -1 + num_rows.
         if stop < 0 and not (stride < 0 and stop == -1):
             stop = stop + num_rows
         stride = 1 if stride is None else stride
@@ -1814,12 +1822,12 @@ class IndexedFrame(Frame):
         if (stop - start) * stride <= 0:
             return self._empty_like(keep_index=True)
 
-        start = len(self) if start > num_rows else start
-        stop = len(self) if stop > num_rows else stop
+        start = min(start, num_rows)
+        stop = min(stop, num_rows)
 
         if stride != 1:
             return self._gather(
-                ct.as_gather_map(
+                GatherMap.from_column_unchecked(
                     cudf.core.column.arange(
                         start,
                         stop=stop,
@@ -1828,22 +1836,25 @@ class IndexedFrame(Frame):
                     ),
                     len(self),
                     nullify=False,
-                    check_bounds=False,
                 ),
-                keep_index=True,
+                keep_index=keep_index,
             )
 
         columns_to_slice = [
-            *(self._index._data.columns if not has_range_index else []),
+            *(
+                self._index._data.columns
+                if keep_index and not has_range_index
+                else []
+            ),
             *self._columns,
         ]
         result = self._from_columns_like_self(
             libcudf.copying.columns_slice(columns_to_slice, [start, stop])[0],
             self._column_names,
-            None if has_range_index else self._index.names,
+            None if has_range_index or not keep_index else self._index.names,
         )
 
-        if has_range_index:
+        if keep_index and has_range_index:
             result.index = self.index[start:stop]
         return result
 
@@ -2366,13 +2377,12 @@ class IndexedFrame(Frame):
 
         # argsort the `by` column
         out = self._gather(
-            ct.as_gather_map(
+            GatherMap.from_column_unchecked(
                 self._get_columns_by_label(by)._get_sorted_inds(
                     ascending=ascending, na_position=na_position
                 ),
                 len(self),
                 nullify=False,
-                check_bounds=False,
             ),
             keep_index=not ignore_index,
         )
@@ -2397,13 +2407,12 @@ class IndexedFrame(Frame):
 
             # argsort the `by` column
             return self._gather(
-                ct.as_gather_map(
+                GatherMap.from_column_unchecked(
                     self._get_columns_by_label(columns)
                     ._get_sorted_inds(ascending=not largest)
                     .slice(*slice(None, n).indices(len(self))),
                     len(self),
                     nullify=False,
-                    check_bounds=False,
                 ),
                 keep_index=True,
             )
@@ -2420,8 +2429,8 @@ class IndexedFrame(Frame):
                     *slice(None, -n - 1, -1).indices(len(self))
                 )
             return self._gather(
-                ct.as_gather_map(
-                    indices, len(self), nullify=False, check_bounds=False
+                GatherMap.from_column_unchecked(
+                    indices, len(self), nullify=False
                 ),
                 keep_index=True,
             )
@@ -3005,17 +3014,18 @@ class IndexedFrame(Frame):
             self._index.names,
         )
 
-    def _apply_boolean_mask(
-        self, boolean_mask: ct.BooleanMask, keep_index=True
-    ):
+    def _apply_boolean_mask(self, boolean_mask: BooleanMask, keep_index=True):
         """Apply boolean mask to each row of `self`.
 
         Rows corresponding to `False` is dropped.
 
         If keep_index is False, the index is not preserved.
         """
-        if (bn := boolean_mask.nrows) != (n := len(self)):
-            raise IndexError(f"Boolean mask has wrong length: {bn} not {n}")
+        if len(boolean_mask.column) != len(self):
+            raise IndexError(
+                "Boolean mask has wrong length: "
+                f"{len(boolean_mask.column)} not {len(self)}"
+            )
         return self._from_columns_like_self(
             libcudf.stream_compaction.apply_boolean_mask(
                 list(self._index._columns + self._columns)
@@ -3069,11 +3079,7 @@ class IndexedFrame(Frame):
         if self._get_axis_from_axis_arg(axis) != 0:
             raise NotImplementedError("Only axis=0 is supported.")
 
-        return self._gather(
-            ct.as_gather_map(
-                indices, len(self), nullify=False, check_bounds=True
-            )
-        )
+        return self._gather(GatherMap(indices, len(self), nullify=False))
 
     def _reset_index(self, level, drop, col_level=0, col_fill=""):
         """Shared path for DataFrame.reset_index and Series.reset_index."""
@@ -3419,7 +3425,7 @@ class IndexedFrame(Frame):
         ignore_index: bool,
     ):
         try:
-            gather_map = ct.as_gather_map(
+            gather_map = GatherMap.from_column_unchecked(
                 cudf.core.column.as_column(
                     random_state.choice(
                         len(self), size=n, replace=replace, p=weights
@@ -3427,7 +3433,6 @@ class IndexedFrame(Frame):
                 ),
                 len(self),
                 nullify=False,
-                check_bounds=False,
             )
         except NotImplementedError as e:
             raise NotImplementedError(
