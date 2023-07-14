@@ -625,6 +625,7 @@ def combine_keys(keys: list[IndexingSpec], index):
                     )
                 )
             )
+            slicer = None
             boolean_masks = []
         else:
             boolean_masks = [
@@ -642,6 +643,16 @@ def combine_keys(keys: list[IndexingSpec], index):
         # If there is a slice this adds another constraint to the
         # intersection problem
         to_intersect = list(k.key.column for k in gather_maps)[::-1]
+        if boolean_masks:
+            (bmask,) = boolean_masks
+            mask = bmask.key.column
+            (indices,) = libcudf.stream_compaction.apply_boolean_mask(
+                [cudf.core.column.arange(len(mask), dtype=size_type_dtype)],
+                mask,
+            )
+            to_intersect.append(indices)
+            boolean_masks = []
+        to_intersect = to_intersect[::-1]
         intersection = to_intersect.pop()
         while to_intersect:
             right = to_intersect.pop()
@@ -675,16 +686,29 @@ def combine_keys(keys: list[IndexingSpec], index):
                 how="inner",
                 nullify_right=False,
             )
+        slicer = None
         gather_map = GatherMap.from_column_unchecked(
             intersection, len(index), nullify=False
         )
         if (
             any(isinstance(k, ScalarIndexer) for k in gather_maps)
-            and len(intersection) == 0
+            and len(intersection) == 1
         ):
             gather_maps = [ScalarIndexer(gather_map)]
         else:
             gather_maps = [MapIndexer(gather_map)]
+    if slicer:
+        assert not boolean_masks and not gather_maps
+        return SliceIndexer(slicer)
+    if boolean_masks:
+        assert not gather_maps
+        (bmask,) = boolean_masks
+        return bmask
+    if gather_maps:
+        assert not boolean_masks
+        (map_,) = gather_maps
+        return map_
+    raise RuntimeError("Unpossible!")
 
 
 def extended_euclid(a: int, b: int) -> Tuple[int, int, int]:
