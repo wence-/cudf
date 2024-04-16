@@ -8,7 +8,6 @@ import itertools
 import operator
 import time
 from functools import partial, reduce, singledispatch
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, NamedTuple
 
 import cudf
@@ -40,7 +39,7 @@ def _dataframe_from_cudf(df):
     )
 
 
-class ExecutionProfile:
+class ExecutionProfiler:
     """Object for recording execution timeline."""
 
     class _context:
@@ -73,7 +72,7 @@ class ExecutionProfile:
         -------
         Context manager for timing
         """
-        return ExecutionProfile._context(self, name)
+        return ExecutionProfiler._context(self, name)
 
     def as_dataframe(self):
         """Return the profiling information as a dataframe."""
@@ -83,8 +82,26 @@ class ExecutionProfile:
         return pl.DataFrame({"node": names, "start": starts, "end": ends})
 
 
-nullctx = contextlib.nullcontext()
-NoopProfile = SimpleNamespace(record=lambda name: nullctx)
+class NoopProfiler:
+    """No-op profiling object to mimic ExecutionProfiler."""
+
+    def __init__(self):
+        self.ctx = contextlib.nullcontext()
+
+    def record(self, name: str):
+        """
+        Return a null context manager.
+
+        Parameters
+        ----------
+        name
+            Ignored
+
+        Returns
+        -------
+        Null context manager.
+        """
+        return self.ctx
 
 
 class PlanVisitor(NamedTuple):
@@ -92,7 +109,7 @@ class PlanVisitor(NamedTuple):
 
     visitor: Visitor
     cache: dict[int, DataFrame]
-    profiler: ExecutionProfile | SimpleNamespace
+    profiler: ExecutionProfiler | NoopProfiler
     expr_visitor: ExprVisitor
 
     def node(self, n: int) -> Plan:
@@ -129,7 +146,7 @@ class PlanVisitor(NamedTuple):
 @nvtx.annotate("Execute Polars plan", domain="cudf_polars")
 def execute_plan(
     visitor: Visitor, *, profile: bool = False
-) -> DataFrame | tuple[DataFrame, ExecutionProfile]:
+) -> DataFrame | tuple[DataFrame, ExecutionProfiler]:
     """
     Execute a polars logical plan using cudf.
 
@@ -145,15 +162,15 @@ def execute_plan(
     DataFrame representing the execution of the plan
     """
     plan = visitor.view_current_node()
-    profiler: ExecutionProfile | SimpleNamespace
+    profiler: ExecutionProfiler | NoopProfiler
     if profile:
-        profiler = ExecutionProfile()
+        profiler = ExecutionProfiler()
         result = _execute_plan(
             plan, PlanVisitor(visitor, {}, profiler, ExprVisitor(visitor))
         )
         return result, profiler
     else:
-        profiler = NoopProfile
+        profiler = NoopProfiler()
         return _execute_plan(
             plan, PlanVisitor(visitor, {}, profiler, ExprVisitor(visitor))
         )
