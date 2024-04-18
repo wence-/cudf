@@ -325,9 +325,9 @@ def _dataframescan(plan: nodes.DataFrameScan, visitor: PlanVisitor):
 
 
 @_execute_plan.register
-def _projection(plan: nodes.Projection, visitor: PlanVisitor):
+def _select(plan: nodes.Select, visitor: PlanVisitor):
     context = _execute_plan(visitor.node(plan.input), visitor)
-    with visitor.record("projection"):
+    with visitor.record("select"):
         # TODO: loses sortedness properties
         for cse in plan.cse_expr:
             context |= evaluate_expr(
@@ -336,29 +336,8 @@ def _projection(plan: nodes.Projection, visitor: PlanVisitor):
         return evaluate_expr(plan.expr, context, visitor.expr_visitor)
 
 
-def to_plc_req(req):
-    """
-    Convert an aggregation name to pylibcudf.
-
-    Parameters
-    ----------
-    req
-        Name of the aggregation.
-
-    Returns
-    -------
-    pylibcudf aggregation object.
-    """
-    if req == "count_all":
-        return plc.aggregation.count(
-            null_handling=plc.types.NullPolicy.INCLUDE
-        )
-    else:
-        return getattr(plc.aggregation, req)()
-
-
 @_execute_plan.register
-def _aggregate(plan: nodes.Aggregate, visitor: PlanVisitor):
+def _groupby(plan: nodes.GroupBy, visitor: PlanVisitor):
     name = "group_by" if plan.options.rolling is None else "rolling"
     # Input frame to groupby
     context = _execute_plan(visitor.node(plan.input), visitor)
@@ -386,7 +365,7 @@ def _aggregate(plan: nodes.Aggregate, visitor: PlanVisitor):
                     column
                     if column is not None
                     else placeholder_column(keys.num_rows()),
-                    list(map(to_plc_req, reqs)),
+                    reqs,
                 )
                 for column, reqs in zip(input_columns, requests)
             ]
@@ -635,7 +614,7 @@ def _slice(plan: nodes.Slice, visitor: PlanVisitor):
 
 
 @_execute_plan.register
-def _selection(plan: nodes.Selection, visitor: PlanVisitor):
+def _filter(plan: nodes.Filter, visitor: PlanVisitor):
     result = _execute_plan(visitor.node(plan.input), visitor)
     with visitor.record("filter"):
         (mask,) = evaluate_expr(
@@ -650,7 +629,7 @@ def _selection(plan: nodes.Selection, visitor: PlanVisitor):
 def _simple_projection(plan: nodes.SimpleProjection, visitor: PlanVisitor):
     result = _execute_plan(visitor.node(plan.input), visitor)
     schema = plan.columns
-    with visitor.record("projection"):
+    with visitor.record("simple_projection"):
         return DataFrame({name: result[name] for name in schema})
 
 

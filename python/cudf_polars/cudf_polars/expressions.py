@@ -526,7 +526,6 @@ def collect_agg(
     on the list of aggregations to evaluate with the new
     aggregation-enabled dataframe context.
     """
-    assert depth <= 1
     agg = visitor.node(node)
     if isinstance(agg, expr_nodes.Column):
         return (
@@ -551,9 +550,11 @@ def collect_agg(
             "len",
         )
     elif isinstance(agg, expr_nodes.Agg):
+        if depth > 0:
+            raise NotImplementedError("Nested aggregations not yet supported")
         request = agg.name
         column, _, name = collect_agg(
-            agg.arguments, context, depth - 1, visitor
+            agg.arguments, context, depth + 1, visitor
         )
         if request == "agg_groups":
             # TODO: libcudf supports a ROW_NUMBER aggregation but it
@@ -574,19 +575,21 @@ def collect_agg(
                 if agg.options
                 else plc.types.NullPolicy.EXCLUDE
             )
-            column = [None]
         else:
             # TODO: ensure all options are handled correctly
             request = getattr(plc.aggregation, request)()
         return column, [(request, node)], name
     elif isinstance(agg, expr_nodes.BinaryExpr):
         # TODO: no nested agg(binop(agg)) right now
-        if depth == 1:
+        if depth == 0:
+            # Not inside an aggregation yet
             lcol, lreq, lname = collect_agg(agg.left, context, depth, visitor)
             rcol, rreq, _ = collect_agg(agg.right, context, depth, visitor)
             # Name of binop result comes from name of left child
             return [*lcol, *rcol], [*lreq, *rreq], lname
         else:
+            # TODO: Inside an aggregation, this needs to disallow (for now)
+            # seeing an aggregation request.
             ((name, column),) = evaluate_expr(agg, context, visitor).items()
             return [column], [(plc.aggregation.collect_list(), node)], name
     else:
@@ -626,8 +629,7 @@ def collect_aggs(
     names: list[str] = []
     # TODO: ugly
     for columns, requests, name in (
-        collect_agg(agg, context, agg_depth(agg, visitor), visitor)
-        for agg in agg_exprs
+        collect_agg(agg, context, 0, visitor) for agg in agg_exprs
     ):
         # Gather aggregation requests by the column they are operating
         # on. We use the id of the column object as the key.
@@ -669,8 +671,8 @@ def _post_aggregate(
     # collect_aggs checks for that.
     context: dict[str, ColumnType] = {}
     mapping: list[tuple[int, Expr]] = []
-    for cols, agg_exprs in zip(raw_columns, aggs_to_replace):
-        for col, agg_expr in zip(cols, agg_exprs):
+    for cols, agg_exprs in zip(raw_columns, aggs_to_replace, strict=True):
+        for col, agg_expr in zip(cols, agg_exprs, strict=True):
             # Here's the placeholder that will replace the agg request
             name = f"tempcol{len(mapping)}"
             newcol = plrs.col(name)
@@ -742,7 +744,7 @@ def _rolling(
             pre_column_window,
             fwd_column_window,
             0,
-            getattr(plc.aggregation, agg)(),
+            agg,
         )
         for agg in aggs
     ]
