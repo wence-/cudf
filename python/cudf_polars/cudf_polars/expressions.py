@@ -3,9 +3,8 @@
 
 from __future__ import annotations
 
-import operator
 from collections import defaultdict
-from functools import reduce, singledispatch
+from functools import singledispatch
 from typing import TYPE_CHECKING, NamedTuple
 
 import cudf
@@ -75,7 +74,7 @@ class ExprVisitor(NamedTuple):
 @singledispatch
 def evaluate_expr(
     expr: Expr, context: DataFrame, visitor: ExprVisitor
-) -> DataFrame:
+) -> ColumnType:
     """
     Evaluate a polars expression given a DataFrame for context.
 
@@ -90,20 +89,9 @@ def evaluate_expr(
 
     Returns
     -------
-    DataFrame the results of evaluating the expression
+    Column representing result of evaluating the expression
     """
     raise AssertionError(f"Unhandled expression type {type(expr)}")
-
-
-@evaluate_expr.register(list)
-@evaluate_expr.register(tuple)
-def _expr_list(expr: list | tuple, context: DataFrame, visitor: ExprVisitor):
-    results = [evaluate_expr(visitor.node(e), context, visitor) for e in expr]
-    n_columns = sum(map(len, (r.keys() for r in results)))
-    result = DataFrame(reduce(operator.or_, results, {}))
-    if len(result.keys()) != n_columns:
-        raise ValueError("Evaluation of list of expressions lost columns")
-    return result
 
 
 @evaluate_expr.register
@@ -111,10 +99,12 @@ def _expr_function(
     expr: expr_nodes.Function, context: DataFrame, visitor: ExprVisitor
 ):
     fname, *fargs = expr.function_data
-    data = evaluate_expr(expr.input, context, visitor)
+    arguments = [
+        evaluate_expr(visitor.node(e), context, visitor) for e in expr.input
+    ]
     if fname == "argwhere":
-        ((name, mask),) = data.items()
-        indices = plc.stream_compaction.apply_boolean_mask(
+        (mask,) = arguments
+        (indices,) = plc.stream_compaction.apply_boolean_mask(
             plc.Table(
                 [
                     as_column(
@@ -123,20 +113,20 @@ def _expr_function(
                 ]
             ),
             mask,
-        )
-        return DataFrame.from_pylibcudf([name], indices)
+        ).columns()
+        return indices
     elif fname == "setsorted":
-        (name,) = data.keys()
-        (flag,) = fargs
-        return data.set_sorted(
-            {name: getattr(DataFrame.IsSorted, flag.upper())}
-        )
+        # TODO: tracking sortedness
+        (column,) = arguments
+        return column
+        # (name,) = data.keys()
+        # (flag,) = fargs
+        # return data.set_sorted(
+        #     {name: getattr(DataFrame.IsSorted, flag.upper())}
+        # )
     elif fname == "is_not_null":
-        ((name, column),) = data.items()
-        return DataFrame.from_pylibcudf(
-            data.names(),
-            plc.Table([plc.unary.is_valid(column)]),
-        )
+        (column,) = arguments
+        return plc.unary.is_valid(column)
     else:
         raise NotImplementedError(f"Function expression {fname=}")
 
@@ -147,7 +137,7 @@ def _expr_window(
 ):
     if isinstance(expr.options, expr_nodes.PyWindowMapping):
         raise NotImplementedError(".over() not supported")
-    (col,), (requests,), aggs_to_replace, (name,) = collect_aggs(
+    (col,), (requests,), aggs_to_replace = collect_aggs(
         [expr.function], context, visitor
     )
     if isinstance(expr.options, expr_nodes.PyRollingGroupOptions):
@@ -156,53 +146,55 @@ def _expr_window(
         # should ignore it here.
         key_columns = None
     else:
-        key_columns = evaluate_expr(expr.partition_by, context, visitor)
+        key_columns = [
+            evaluate_expr(visitor.node(e), context, visitor)
+            for e in expr.partition_by
+        ]
     index_column = context[expr.options.index_column]
     out_cols = _rolling(
         index_column, col, expr.options.period, requests, key_columns
     )
-    return _post_aggregate(
+    (result,) = _post_aggregate(
         [out_cols], [expr.function], aggs_to_replace, visitor
     )
+    return result
 
 
 @evaluate_expr.register
 def _alias(expr: expr_nodes.Alias, context: DataFrame, visitor: ExprVisitor):
-    result = evaluate_expr(visitor.node(expr.expr), context, visitor)
-    (old_name,) = result.names()
-    return result.rename({old_name: expr.name})
+    # TODO: optimizer should strip these from plan nodes
+    return evaluate_expr(visitor.node(expr.expr), context, visitor)
 
 
 @evaluate_expr.register
 def _literal(
     expr: expr_nodes.Literal, context: DataFrame, visitor: ExprVisitor
 ):
-    # TODO: This is bad because it's lying about the dataframe property
+    # TODO: This is bad because it's lying about the Column property
     dtype = to_cudf_dtype(expr.dtype)
     value = expr.value
-    return DataFrame(
-        {"literal": cudf.Scalar(value, dtype)}  # type: ignore
-    )  # type: ignore
+    return cudf.Scalar(value, dtype)  # type: ignore
 
 
 @evaluate_expr.register
 def _sort(expr: expr_nodes.Sort, context: DataFrame, visitor: ExprVisitor):
     to_sort = evaluate_expr(visitor.node(expr.expr), context, visitor)
-    (name,) = to_sort.names()
     (stable, nulls_last, descending) = expr.options
     descending, column_order, null_precedence = sort_order(
         [descending], nulls_last=nulls_last, num_keys=1
     )
     do_sort = plc.sorting.stable_sort if stable else plc.sorting.sort
     result = do_sort(to_sort.to_pylibcudf(), column_order, null_precedence)
-    flag = (
-        DataFrame.IsSorted.DESCENDING
-        if descending
-        else DataFrame.IsSorted.ASCENDING
-    )
-    return DataFrame.from_pylibcudf(to_sort.names(), result).set_sorted(
-        {name: flag}
-    )
+    return result
+    # TODO: track sortedness
+    # flag = (
+    #     DataFrame.IsSorted.DESCENDING
+    #     if descending
+    #     else DataFrame.IsSorted.ASCENDING
+    # )
+    # return DataFrame.from_pylibcudf(to_sort.names(), result).set_sorted(
+    #     {name: flag}
+    # )
 
 
 @evaluate_expr.register
@@ -211,18 +203,19 @@ def _sort_by(
 ):
     to_sort = evaluate_expr(visitor.node(expr.expr), context, visitor)
     descending = expr.descending
-    sort_keys = evaluate_expr(expr.by, context, visitor)
+    sort_keys = [
+        evaluate_expr(visitor.node(e), context, visitor) for e in expr.by
+    ]
     # TODO: no stable to sort_by in polars
     descending, column_order, null_precedence = sort_order(
         descending, nulls_last=True, num_keys=len(sort_keys)
     )
-    result = plc.sorting.sort_by_key(
-        to_sort.to_pylibcudf(),
-        sort_keys.to_pylibcudf(),
+    return plc.sorting.sort_by_key(
+        plc.Table([to_sort]),
+        plc.Table(sort_keys),
         column_order,
         null_precedence,
     )
-    return DataFrame.from_pylibcudf(to_sort.keys(), result)
 
 
 @evaluate_expr.register
@@ -238,47 +231,44 @@ def _gather(expr: expr_nodes.Gather, context: DataFrame, visitor: ExprVisitor):
     if expr.scalar:
         raise NotImplementedError("scalar gather")
     result = evaluate_expr(visitor.node(expr.expr), context, visitor)
-    (indices,) = evaluate_expr(
-        visitor.node(expr.idx), context, visitor
-    ).columns()
+    indices = evaluate_expr(visitor.node(expr.idx), context, visitor)
     # TODO: check out of bounds
-    return result.gather(
-        indices, bounds_policy=plc.copying.OutOfBoundsPolicy.DONT_CHECK
-    )
+    (column,) = plc.copying.gather(
+        plc.Table([result]),
+        indices,
+        bounds_policy=plc.copying.OutOfBoundsPolicy.DONT_CHECK,
+    ).columns()
+    return column
 
 
 @evaluate_expr.register
 def _filter(expr: expr_nodes.Filter, context: DataFrame, visitor: ExprVisitor):
     result = evaluate_expr(visitor.node(expr.input), context, visitor)
-    (mask,) = evaluate_expr(visitor.node(expr.by), context, visitor).columns()
-    return result.filter(mask)
+    mask = evaluate_expr(visitor.node(expr.by), context, visitor)
+    (column,) = plc.stream_compaction.apply_boolean_mask(
+        plc.Table([result]), mask
+    ).columns()
+    return column
 
 
 # TODO: in unoptimized plans sometimes the cast doesn't appear?
 # Do we need to handle it in schemas?
 @evaluate_expr.register
 def _cast(expr: expr_nodes.Cast, context: DataFrame, visitor: ExprVisitor):
-    context = evaluate_expr(visitor.node(expr.expr), context, visitor)
+    column = evaluate_expr(visitor.node(expr.expr), context, visitor)
     dtype = to_pylibcudf_dtype(expr.dtype)
-    return DataFrame(
-        (
-            name,
-            plc.unary.cast(column, dtype),
-        )
-        for name, column in context.items()
-    )
+    return plc.unary.cast(column, dtype)
 
 
 @evaluate_expr.register
 def _column(expr: expr_nodes.Column, context: DataFrame, visitor: ExprVisitor):
-    return DataFrame({expr.name: context[expr.name]})
+    return context[expr.name]
 
 
 @evaluate_expr.register
 def _agg(expr: expr_nodes.Agg, context: DataFrame, visitor: ExprVisitor):
     name = expr.name
-    result = evaluate_expr(visitor.node(expr.arguments), context, visitor)
-    ((colname, column),) = result.items()
+    column = evaluate_expr(visitor.node(expr.arguments), context, visitor)
     # TODO: handle options
     options = expr.options
 
@@ -291,7 +281,7 @@ def _agg(expr: expr_nodes.Agg, context: DataFrame, visitor: ExprVisitor):
         res = plc.reduce.reduce(
             column, getattr(plc.aggregation, name)(), column.type()
         )
-        return DataFrame({colname: plc.Column.from_scalar(res, 1)})
+        return plc.Column.from_scalar(res, 1)
     elif name in {"median", "mean", "sum"}:
         # polars always ignores nulls
         column = plc.stream_compaction.drop_nulls(
@@ -300,58 +290,52 @@ def _agg(expr: expr_nodes.Agg, context: DataFrame, visitor: ExprVisitor):
         res = plc.reduce.reduce(
             column, getattr(plc.aggregation, name)(), column.type()
         )
-        return DataFrame({colname: plc.Column.from_scalar(res, 1)})
+        return plc.Column.from_scalar(res, 1)
     elif name == "nunique":
-        return DataFrame(
-            {
-                colname: plc.Column.from_scalar(
-                    # TODO: explicit datatype
-                    plc.interop.from_arrow(
-                        pa.scalar(
-                            plc.stream_compaction.distinct_count(
-                                column,
-                                plc.types.NullPolicy.EXCLUDE,
-                                plc.types.NanPolicy.NAN_IS_VALID,
-                            )
-                        )
-                    ),
-                    1,
+        return plc.Column.from_scalar(
+            # TODO: explicit datatype
+            plc.interop.from_arrow(
+                pa.scalar(
+                    plc.stream_compaction.distinct_count(
+                        column,
+                        plc.types.NullPolicy.EXCLUDE,
+                        plc.types.NanPolicy.NAN_IS_VALID,
+                    )
                 )
-            }
+            ),
+            1,
         )
     elif name == "first":
-        return result.slice(0, 1)
+        (column,) = plc.copying.slice(
+            plc.Table([column]), [0, min(1, column.size())]
+        ).columns()
+        return column
     elif name == "last":
-        return result.slice(-1, 1)
+        (column,) = plc.copying.slice(
+            plc.Table([column]), [max(column.size() - 1, 0), column.size()]
+        ).columns()
+        return column
     elif name == "count":
         include_null = options
-        return DataFrame(
-            {
-                colname: plc.Column.from_scalar(
-                    plc.interop.from_arrow(
-                        pa.scalar(
-                            column.size()
-                            - (0 if include_null else column.null_count())
-                        )
-                    ),
-                    1,
+        return plc.Column.from_scalar(
+            plc.interop.from_arrow(
+                pa.scalar(
+                    column.size()
+                    - (0 if include_null else column.null_count())
                 )
-            }
+            ),
+            1,
         )
     elif name in {"std", "var"}:
         ddof = options
         # TODO: nan handling is wrong (?) in cudf?
-        return DataFrame(
-            {
-                colname: plc.Column.from_scalar(
-                    plc.reduce.reduce(
-                        column,
-                        getattr(plc.aggregation, name)(ddof=ddof),
-                        column.type(),
-                    ),
-                    1,
-                )
-            }
+        return plc.Column.from_scalar(
+            plc.reduce.reduce(
+                column,
+                getattr(plc.aggregation, name)(ddof=ddof),
+                column.type(),
+            ),
+            1,
         )
     else:
         raise NotImplementedError(f"Haven't implemented aggregation {name=}")
@@ -420,11 +404,9 @@ def _as_plc(val):
 def _binop(
     expr: expr_nodes.BinaryExpr, context: DataFrame, visitor: ExprVisitor
 ):
-    left = evaluate_expr(visitor.node(expr.left), context, visitor)
+    lop = evaluate_expr(visitor.node(expr.left), context, visitor)
     op = expr.op
-    right = evaluate_expr(visitor.node(expr.right), context, visitor)
-    (lop,) = left.columns()
-    (rop,) = right.columns()
+    rop = evaluate_expr(visitor.node(expr.right), context, visitor)
     # TODO: Fix dtype logic below to not be mixing pylibcudf and cudf types.
     # Probably easiest after we've fully switched over scalars too.
     try:
@@ -445,16 +427,7 @@ def _binop(
         dtype = dtype_to_pylibcudf_type(dtype or left_dtype)
     except KeyError as err:
         raise NotImplementedError(f"Unhandled binop {op=}") from err
-    return DataFrame.from_pylibcudf(
-        left.names(),
-        plc.Table(
-            [
-                plc.binaryop.binary_operation(
-                    _as_plc(lop), _as_plc(rop), op, dtype
-                )
-            ]
-        ),
-    )
+    return plc.binaryop.binary_operation(_as_plc(lop), _as_plc(rop), op, dtype)
 
 
 # Aggregations, need to be shared between plan and expression
@@ -510,7 +483,7 @@ def agg_depth(agg, visitor: ExprVisitor) -> int:
 def collect_agg(
     node: int, context: DataFrame, depth: int, visitor: ExprVisitor
 ) -> tuple[
-    list[ColumnType | None], list[tuple[plc.aggregation.Aggregation, int]], str
+    list[ColumnType | None], list[tuple[plc.aggregation.Aggregation, int]]
 ]:
     """
     Collect the aggregation requirements of a single aggregation request.
@@ -531,11 +504,10 @@ def collect_agg(
         return (
             [context[agg.name]],
             [(plc.aggregation.collect_list(), node)],
-            agg.name,
         )
     elif isinstance(agg, expr_nodes.Alias):
-        col, req, _ = collect_agg(agg.expr, context, depth, visitor)
-        return col, req, agg.name
+        # TODO: should we see this?
+        return collect_agg(agg.expr, context, depth, visitor)
     elif isinstance(agg, expr_nodes.Len):
         return (
             [placeholder_column(context.num_rows())],
@@ -547,15 +519,12 @@ def collect_agg(
                     node,
                 )
             ],
-            "len",
         )
     elif isinstance(agg, expr_nodes.Agg):
         if depth > 0:
             raise NotImplementedError("Nested aggregations not yet supported")
         request = agg.name
-        column, _, name = collect_agg(
-            agg.arguments, context, depth + 1, visitor
-        )
+        column, _ = collect_agg(agg.arguments, context, depth + 1, visitor)
         if request == "agg_groups":
             # TODO: libcudf supports a ROW_NUMBER aggregation but it
             # is not exposed in python and is not available for
@@ -578,20 +547,19 @@ def collect_agg(
         else:
             # TODO: ensure all options are handled correctly
             request = getattr(plc.aggregation, request)()
-        return column, [(request, node)], name
+        return column, [(request, node)]
     elif isinstance(agg, expr_nodes.BinaryExpr):
         # TODO: no nested agg(binop(agg)) right now
         if depth == 0:
             # Not inside an aggregation yet
-            lcol, lreq, lname = collect_agg(agg.left, context, depth, visitor)
-            rcol, rreq, _ = collect_agg(agg.right, context, depth, visitor)
-            # Name of binop result comes from name of left child
-            return [*lcol, *rcol], [*lreq, *rreq], lname
+            lcol, lreq = collect_agg(agg.left, context, depth, visitor)
+            rcol, rreq = collect_agg(agg.right, context, depth, visitor)
+            return [*lcol, *rcol], [*lreq, *rreq]
         else:
             # TODO: Inside an aggregation, this needs to disallow (for now)
             # seeing an aggregation request.
-            ((name, column),) = evaluate_expr(agg, context, visitor).items()
-            return [column], [(plc.aggregation.collect_list(), node)], name
+            column = evaluate_expr(agg, context, visitor)
+            return [column], [(plc.aggregation.collect_list(), node)]
     else:
         raise NotImplementedError
 
@@ -602,7 +570,6 @@ def collect_aggs(
     list[ColumnType | None],
     list[list[plc.aggregation.Aggregation]],
     list[list[list[int]]],
-    list[str],
 ]:
     """
     Collect all the unique aggregation requests.
@@ -626,9 +593,8 @@ def collect_aggs(
     groups: dict[
         int, tuple[ColumnType | None, list[str], dict[str, Expr]]
     ] = {}
-    names: list[str] = []
     # TODO: ugly
-    for columns, requests, name in (
+    for columns, requests in (
         collect_agg(agg, context, 0, visitor) for agg in agg_exprs
     ):
         # Gather aggregation requests by the column they are operating
@@ -646,7 +612,6 @@ def collect_aggs(
                 column_requests.append(request)
             # But we need to record all the aggregation expressions
             to_replace[request].append(agg)
-        names.append(name)
     raw_columns, raw_requests, aggs_to_replace = list(
         map(list, zip(*groups.values()))
     )
@@ -654,7 +619,6 @@ def collect_aggs(
         raw_columns,
         raw_requests,
         [list(a.values()) for a in aggs_to_replace],
-        names,
     )
 
 
@@ -663,7 +627,7 @@ def _post_aggregate(
     aggs: list[int],
     aggs_to_replace: list[list[list[int]]],
     visitor: ExprVisitor,
-) -> DataFrame:
+) -> list[ColumnType]:
     # rewrite the agg expression tree to replace agg requests with
     # the performed leaf aggregations and evaluate the resulting
     # expression to handle any expression-based stuff.
@@ -679,9 +643,9 @@ def _post_aggregate(
             context[name] = col
             for agg in agg_expr:
                 mapping.append((agg, newcol))
-    return evaluate_expr(
-        aggs, DataFrame(context), visitor.with_replacements(mapping)
-    )
+    context = DataFrame(context)
+    v = visitor.with_replacements(mapping)
+    return [evaluate_expr(v.node(agg), context, v) for agg in aggs]
 
 
 def _rolling(
@@ -689,7 +653,7 @@ def _rolling(
     input_column: ColumnType,
     period: tuple,
     aggs: list[str],
-    keys: DataFrame | None = None,
+    keys: list[ColumnType] | None = None,
 ) -> list[ColumnType]:
     # first, compute the windows:
     months, weeks, days, nanoseconds, parsed_int = period
@@ -705,7 +669,7 @@ def _rolling(
     input_column = input_column
     if keys is not None:
         # grouped rolling window
-        grouper = plc.groupby.GroupBy(keys.to_pylibcudf())
+        grouper = plc.groupby.GroupBy(plc.Table(keys))
         group_starts, _, _ = grouper.get_groups()
         group_starts = np.asarray(group_starts)
         group_starts = group_starts[:-1].repeat(np.diff(group_starts))

@@ -212,11 +212,11 @@ def _python_scan(plan: nodes.PythonScan, visitor: PlanVisitor):
             raise NotImplementedError("Don't know what to do here")
         context = scan_fn(with_columns, predicate, nrows)
         if predicate is not None:
-            (mask,) = evaluate_expr(
-                visitor.expr_visitor.node(predicate),
+            mask = evaluate_expr(
+                visitor.expr_visitor.node(predicate.node),
                 context,
                 visitor.expr_visitor,
-            ).columns()
+            )
             return context.filter(mask)
         else:
             return context
@@ -267,12 +267,12 @@ def _scan(plan: nodes.Scan, visitor: PlanVisitor):
             # TODO: cudf's read_parquet only handles DNF expressions of single
             # column predicates. polars allows for an arbitrary expression
             # that evaluates to a boolean.
-            (predicate,) = evaluate_expr(
-                visitor.expr_visitor.node(plan.predicate),
+            mask = evaluate_expr(
+                visitor.expr_visitor.node(plan.predicate.node),
                 df,
                 visitor.expr_visitor,
-            ).columns()
-            return df.filter(predicate)
+            )
+            return df.filter(mask)
 
 
 @_execute_plan.register
@@ -310,16 +310,18 @@ def _dataframescan(plan: nodes.DataFrameScan, visitor: PlanVisitor):
 
         plc_table = plc.interop.from_arrow(arrow_table)
         context = DataFrame(
-            dict(zip(arrow_table.column_names, plc_table.columns()))
+            dict(
+                zip(arrow_table.column_names, plc_table.columns(), strict=True)
+            )
         )
         if plan.selection is not None:
             # Filters
-            (predicate,) = evaluate_expr(
-                visitor.expr_visitor.node(plan.selection),
+            mask = evaluate_expr(
+                visitor.expr_visitor.node(plan.selection.node),
                 context,
                 visitor.expr_visitor,
-            ).columns()
-            return context.filter(predicate)
+            )
+            return context.filter(mask)
         else:
             return context
 
@@ -330,10 +332,23 @@ def _select(plan: nodes.Select, visitor: PlanVisitor):
     with visitor.record("select"):
         # TODO: loses sortedness properties
         for cse in plan.cse_expr:
-            context |= evaluate_expr(
-                visitor.expr_visitor.node(cse), context, visitor.expr_visitor
-            )
-        return evaluate_expr(plan.expr, context, visitor.expr_visitor)
+            context |= {
+                cse.output_name: evaluate_expr(
+                    visitor.expr_visitor.node(cse.node),
+                    context,
+                    visitor.expr_visitor,
+                )
+            }
+        return DataFrame(
+            {
+                e.output_name: evaluate_expr(
+                    visitor.expr_visitor.node(e.node),
+                    context,
+                    visitor.expr_visitor,
+                )
+                for e in plan.expr
+            }
+        )
 
 
 @_execute_plan.register
@@ -341,19 +356,30 @@ def _groupby(plan: nodes.GroupBy, visitor: PlanVisitor):
     name = "group_by" if plan.options.rolling is None else "rolling"
     # Input frame to groupby
     context = _execute_plan(visitor.node(plan.input), visitor)
+    agg_names = [e.output_name for e in plan.aggs]
+    agg_nodes = [e.node for e in plan.aggs]
     with visitor.record(name):
         # This should be list of mappings of names to columns. This
         # will happily produce grouping keys that are expressions from
         # the input.
-        keys = evaluate_expr(plan.keys, context, visitor.expr_visitor)
+        keys = DataFrame(
+            {
+                k.output_name: evaluate_expr(
+                    visitor.expr_visitor.node(k.node),
+                    context,
+                    visitor.expr_visitor,
+                )
+                for k in plan.keys
+            }
+        )
         # TODO: handle dropna options
         # TODO: One is allowed, in polars to aggregate arbitrary
         # expressions, and even nest aggregation requests. This could be
         # supported in this setup with a multi-pass implementation,
         # assuming that all of the shapes line up. But for now,
         # collect_aggs bails out if it observes nested aggregations.
-        input_columns, requests, aggs_to_replace, names = collect_aggs(
-            plan.aggs, context, visitor.expr_visitor
+        input_columns, requests, aggs_to_replace = collect_aggs(
+            agg_nodes, context, visitor.expr_visitor
         )
 
         if plan.options.rolling is None:  # regular group-by aggregation
@@ -367,7 +393,7 @@ def _groupby(plan: nodes.GroupBy, visitor: PlanVisitor):
                     else placeholder_column(keys.num_rows()),
                     reqs,
                 )
-                for column, reqs in zip(input_columns, requests)
+                for column, reqs in zip(input_columns, requests, strict=True)
             ]
             # TODO: check that all aggs were performed
             group_keys, raw_tables = grouper.aggregate(agg_requests)
@@ -385,23 +411,23 @@ def _groupby(plan: nodes.GroupBy, visitor: PlanVisitor):
                 _rolling,
                 index_column=index_column,
                 period=options.period,
-                keys=None if len(keys) == 0 else keys,
+                keys=None if len(keys) == 0 else keys.columns(),
             )
             raw_columns = [
                 roll(input_column=col, aggs=request)
-                for request, col in zip(requests, input_columns)
+                for request, col in zip(requests, input_columns, strict=True)
             ]
             keys = DataFrame(keys | {options.index_column: index_column})
             group_keys = keys.columns()
 
-        result = _post_aggregate(
-            raw_columns, plan.aggs, aggs_to_replace, visitor.expr_visitor
+        agg_columns = _post_aggregate(
+            raw_columns, agg_nodes, aggs_to_replace, visitor.expr_visitor
         )
         zlice = plan.options.slice
         result = DataFrame(
             zip(
-                itertools.chain(keys.names(), names),
-                itertools.chain(group_keys, result.values()),
+                itertools.chain(keys.names(), agg_names),
+                itertools.chain(group_keys, agg_columns),
                 strict=True,
             )
         )
@@ -416,8 +442,26 @@ def _join(plan: nodes.Join, visitor: PlanVisitor):
     left = _execute_plan(visitor.node(plan.input_left), visitor)
     right = _execute_plan(visitor.node(plan.input_right), visitor)
     with visitor.record("join"):
-        left_on = evaluate_expr(plan.left_on, left, visitor.expr_visitor)
-        right_on = evaluate_expr(plan.right_on, right, visitor.expr_visitor)
+        left_on = plc.Table(
+            [
+                evaluate_expr(
+                    visitor.expr_visitor.node(e.node),
+                    left,
+                    visitor.expr_visitor,
+                )
+                for e in plan.left_on
+            ]
+        )
+        right_on = plc.Table(
+            [
+                evaluate_expr(
+                    visitor.expr_visitor.node(e.node),
+                    right,
+                    visitor.expr_visitor,
+                )
+                for e in plan.right_on
+            ]
+        )
         how, join_nulls, zlice, suffix = plan.options
         null_equality = (
             plc.types.NullEquality.EQUAL
@@ -461,40 +505,35 @@ def _join(plan: nodes.Join, visitor: PlanVisitor):
             ),
         }[how]
         if right_policy is None:
-            lg = joiner(
-                left_on.to_pylibcudf(), right_on.to_pylibcudf(), null_equality
-            )
+            lg = joiner(left_on, right_on, null_equality)
             result = DataFrame.from_pylibcudf(
                 left.names(),
                 plc.copying.gather(left.to_pylibcudf(), lg, left_policy),
             )
         else:
-            lg, rg = joiner(
-                left_on.to_pylibcudf(), right_on.to_pylibcudf(), null_equality
-            )
+            lg, rg = joiner(left_on, right_on, null_equality)
             left = DataFrame.from_pylibcudf(
                 left.names(),
                 plc.copying.gather(left.to_pylibcudf(), lg, left_policy),
             )
+            right_key_names = {e.output_name for e in plan.right_on}
             right_names = [
                 name if name not in left else f"{name}{suffix}"
                 for name in right.names()
-                if name not in right_on
+                if name not in right_key_names
             ]
             right = DataFrame.from_pylibcudf(
                 right_names,
                 plc.copying.gather(
-                    right.discard(set(right_on)).to_pylibcudf(),
+                    right.discard(right_key_names).to_pylibcudf(),
                     rg,
                     right_policy,
                 ),
             )
             if how == "outer" and coalesce_key_columns:
                 for name, replacement in zip(
-                    left_on.names(),
-                    plc.copying.gather(
-                        right_on.to_pylibcudf(), rg, right_policy
-                    ).columns(),
+                    (e.output_name for e in plan.left_on),
+                    plc.copying.gather(right_on, rg, right_policy).columns(),
                     strict=True,
                 ):
                     left[name] = plc.replace.replace_nulls(
@@ -511,9 +550,14 @@ def _join(plan: nodes.Join, visitor: PlanVisitor):
 def _hstack(plan: nodes.HStack, visitor: PlanVisitor):
     result = _execute_plan(visitor.node(plan.input), visitor)
     with visitor.record("hstack"):
-        exprs = evaluate_expr(plan.exprs, result, visitor.expr_visitor)
+        columns = {
+            e.output_name: evaluate_expr(
+                visitor.expr_visitor.node(e.node), result, visitor.expr_visitor
+            )
+            for e in plan.exprs
+        }
         # TODO: loses sortedness property
-        return DataFrame(result | exprs)
+        return DataFrame(result | columns)
 
 
 @_execute_plan.register
@@ -571,7 +615,12 @@ def _sort(plan: nodes.Sort, visitor: PlanVisitor):
     result = _execute_plan(visitor.node(plan.input), visitor)
     with visitor.record("sort"):
         input_col_ids = set(map(id, result.values()))
-        sort_keys = evaluate_expr(plan.by_column, result, visitor.expr_visitor)
+        sort_keys = [
+            evaluate_expr(
+                visitor.expr_visitor.node(e.node), result, visitor.expr_visitor
+            )
+            for e in plan.by_column
+        ]
         (stable, nulls_last, descending, zlice) = plan.args
         descending, column_order, null_precedence = sort_order(
             descending, nulls_last=nulls_last, num_keys=len(sort_keys)
@@ -585,7 +634,7 @@ def _sort(plan: nodes.Sort, visitor: PlanVisitor):
             result.names(),
             do_sort(
                 result.to_pylibcudf(),
-                sort_keys.to_pylibcudf(),
+                plc.Table(sort_keys),
                 column_order,
                 null_precedence,
             ),
@@ -596,7 +645,12 @@ def _sort(plan: nodes.Sort, visitor: PlanVisitor):
                 if d
                 else DataFrame.IsSorted.ASCENDING
             )
-            for d, (name, col) in zip(descending, sort_keys.items())
+            for d, name, col in zip(
+                descending,
+                (e.output_name for e in plan.by_column),
+                sort_keys,
+                strict=True,
+            )
             if id(col) in input_col_ids
         }
         result = result.set_sorted(sortedness)
@@ -617,11 +671,11 @@ def _slice(plan: nodes.Slice, visitor: PlanVisitor):
 def _filter(plan: nodes.Filter, visitor: PlanVisitor):
     result = _execute_plan(visitor.node(plan.input), visitor)
     with visitor.record("filter"):
-        (mask,) = evaluate_expr(
-            visitor.expr_visitor.node(plan.predicate),
+        mask = evaluate_expr(
+            visitor.expr_visitor.node(plan.predicate.node),
             result,
             visitor.expr_visitor,
-        ).columns()
+        )
         return result.filter(mask)
 
 
