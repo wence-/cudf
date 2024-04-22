@@ -25,7 +25,6 @@ from cudf_polars.expressions import (
     _post_aggregate,
     _rolling,
     collect_aggs,
-    evaluate_expr,
 )
 from cudf_polars.utils import placeholder_column, sort_order
 
@@ -212,11 +211,7 @@ def _python_scan(plan: nodes.PythonScan, visitor: PlanVisitor):
             raise NotImplementedError("Don't know what to do here")
         context = scan_fn(with_columns, predicate, nrows)
         if predicate is not None:
-            mask = evaluate_expr(
-                visitor.expr_visitor.node(predicate.node),
-                context,
-                visitor.expr_visitor,
-            )
+            mask = visitor.expr_visitor(predicate.node, context)
             return context.filter(mask)
         else:
             return context
@@ -267,11 +262,7 @@ def _scan(plan: nodes.Scan, visitor: PlanVisitor):
             # TODO: cudf's read_parquet only handles DNF expressions of single
             # column predicates. polars allows for an arbitrary expression
             # that evaluates to a boolean.
-            mask = evaluate_expr(
-                visitor.expr_visitor.node(plan.predicate.node),
-                df,
-                visitor.expr_visitor,
-            )
+            mask = visitor.expr_visitor(plan.predicate.node, df)
             return df.filter(mask)
 
 
@@ -316,11 +307,7 @@ def _dataframescan(plan: nodes.DataFrameScan, visitor: PlanVisitor):
         )
         if plan.selection is not None:
             # Filters
-            mask = evaluate_expr(
-                visitor.expr_visitor.node(plan.selection.node),
-                context,
-                visitor.expr_visitor,
-            )
+            mask = visitor.expr_visitor(plan.selection.node, context)
             return context.filter(mask)
         else:
             return context
@@ -333,19 +320,11 @@ def _select(plan: nodes.Select, visitor: PlanVisitor):
         # TODO: loses sortedness properties
         for cse in plan.cse_expr:
             context |= {
-                cse.output_name: evaluate_expr(
-                    visitor.expr_visitor.node(cse.node),
-                    context,
-                    visitor.expr_visitor,
-                )
+                cse.output_name: visitor.expr_visitor(cse.node, context)
             }
         return DataFrame(
             {
-                e.output_name: evaluate_expr(
-                    visitor.expr_visitor.node(e.node),
-                    context,
-                    visitor.expr_visitor,
-                )
+                e.output_name: visitor.expr_visitor(e.node, context)
                 for e in plan.expr
             }
         )
@@ -364,11 +343,7 @@ def _groupby(plan: nodes.GroupBy, visitor: PlanVisitor):
         # the input.
         keys = DataFrame(
             {
-                k.output_name: evaluate_expr(
-                    visitor.expr_visitor.node(k.node),
-                    context,
-                    visitor.expr_visitor,
-                )
+                k.output_name: visitor.expr_visitor(k.node, context)
                 for k in plan.keys
             }
         )
@@ -443,24 +418,10 @@ def _join(plan: nodes.Join, visitor: PlanVisitor):
     right = _execute_plan(visitor.node(plan.input_right), visitor)
     with visitor.record("join"):
         left_on = plc.Table(
-            [
-                evaluate_expr(
-                    visitor.expr_visitor.node(e.node),
-                    left,
-                    visitor.expr_visitor,
-                )
-                for e in plan.left_on
-            ]
+            [visitor.expr_visitor(e.node, left) for e in plan.left_on]
         )
         right_on = plc.Table(
-            [
-                evaluate_expr(
-                    visitor.expr_visitor.node(e.node),
-                    right,
-                    visitor.expr_visitor,
-                )
-                for e in plan.right_on
-            ]
+            [visitor.expr_visitor(e.node, right) for e in plan.right_on]
         )
         how, join_nulls, zlice, suffix = plan.options
         null_equality = (
@@ -551,9 +512,7 @@ def _hstack(plan: nodes.HStack, visitor: PlanVisitor):
     result = _execute_plan(visitor.node(plan.input), visitor)
     with visitor.record("hstack"):
         columns = {
-            e.output_name: evaluate_expr(
-                visitor.expr_visitor.node(e.node), result, visitor.expr_visitor
-            )
+            e.output_name: visitor.expr_visitor(e.node, result)
             for e in plan.exprs
         }
         # TODO: loses sortedness property
@@ -616,10 +575,7 @@ def _sort(plan: nodes.Sort, visitor: PlanVisitor):
     with visitor.record("sort"):
         input_col_ids = set(map(id, result.values()))
         sort_keys = [
-            evaluate_expr(
-                visitor.expr_visitor.node(e.node), result, visitor.expr_visitor
-            )
-            for e in plan.by_column
+            visitor.expr_visitor(e.node, result) for e in plan.by_column
         ]
         (stable, nulls_last, descending, zlice) = plan.args
         descending, column_order, null_precedence = sort_order(
@@ -671,11 +627,7 @@ def _slice(plan: nodes.Slice, visitor: PlanVisitor):
 def _filter(plan: nodes.Filter, visitor: PlanVisitor):
     result = _execute_plan(visitor.node(plan.input), visitor)
     with visitor.record("filter"):
-        mask = evaluate_expr(
-            visitor.expr_visitor.node(plan.predicate.node),
-            result,
-            visitor.expr_visitor,
-        )
+        mask = visitor.expr_visitor(plan.predicate.node, result)
         return result.filter(mask)
 
 

@@ -40,20 +40,22 @@ class ExprVisitor(NamedTuple):
 
     visitor: Visitor
 
-    def node(self, n: int) -> Expr:
+    def __call__(self, node: int, context: DataFrame) -> ColumnType:
         """
-        Translate node to python object.
+        Return the evaluation of an expression node in a context.
 
         Parameters
         ----------
-        n
-            Node to replace.
+        node
+            The node to evaluate
+        context
+            The dataframe providing context
 
         Returns
         -------
-        Python representation of the node.
+        New column as the evaluation of the expression.
         """
-        return self.visitor.view_expression(n)
+        return evaluate_expr(self.visitor.view_expression(node), context, self)
 
     def with_replacements(self, mapping: list[tuple[int, Expr]]) -> Self:
         """
@@ -99,9 +101,7 @@ def _expr_function(
     expr: expr_nodes.Function, context: DataFrame, visitor: ExprVisitor
 ):
     fname, *fargs = expr.function_data
-    arguments = [
-        evaluate_expr(visitor.node(e), context, visitor) for e in expr.input
-    ]
+    arguments = [visitor(e, context) for e in expr.input]
     if fname == "argwhere":
         (mask,) = arguments
         (indices,) = plc.stream_compaction.apply_boolean_mask(
@@ -146,10 +146,7 @@ def _expr_window(
         # should ignore it here.
         key_columns = None
     else:
-        key_columns = [
-            evaluate_expr(visitor.node(e), context, visitor)
-            for e in expr.partition_by
-        ]
+        key_columns = [visitor(e, context) for e in expr.partition_by]
     index_column = context[expr.options.index_column]
     out_cols = _rolling(
         index_column, col, expr.options.period, requests, key_columns
@@ -163,7 +160,7 @@ def _expr_window(
 @evaluate_expr.register
 def _alias(expr: expr_nodes.Alias, context: DataFrame, visitor: ExprVisitor):
     # TODO: optimizer should strip these from plan nodes
-    return evaluate_expr(visitor.node(expr.expr), context, visitor)
+    return visitor(expr.expr, context)
 
 
 @evaluate_expr.register
@@ -178,7 +175,7 @@ def _literal(
 
 @evaluate_expr.register
 def _sort(expr: expr_nodes.Sort, context: DataFrame, visitor: ExprVisitor):
-    to_sort = evaluate_expr(visitor.node(expr.expr), context, visitor)
+    to_sort = visitor(expr.expr, context)
     (stable, nulls_last, descending) = expr.options
     descending, column_order, null_precedence = sort_order(
         [descending], nulls_last=nulls_last, num_keys=1
@@ -201,11 +198,9 @@ def _sort(expr: expr_nodes.Sort, context: DataFrame, visitor: ExprVisitor):
 def _sort_by(
     expr: expr_nodes.SortBy, context: DataFrame, visitor: ExprVisitor
 ):
-    to_sort = evaluate_expr(visitor.node(expr.expr), context, visitor)
+    to_sort = visitor(expr.expr, context)
     descending = expr.descending
-    sort_keys = [
-        evaluate_expr(visitor.node(e), context, visitor) for e in expr.by
-    ]
+    sort_keys = [visitor(e, context) for e in expr.by]
     # TODO: no stable to sort_by in polars
     descending, column_order, null_precedence = sort_order(
         descending, nulls_last=True, num_keys=len(sort_keys)
@@ -230,8 +225,8 @@ def _gather(expr: expr_nodes.Gather, context: DataFrame, visitor: ExprVisitor):
     # stream-ordered launching to overlap things.
     if expr.scalar:
         raise NotImplementedError("scalar gather")
-    result = evaluate_expr(visitor.node(expr.expr), context, visitor)
-    indices = evaluate_expr(visitor.node(expr.idx), context, visitor)
+    result = visitor(expr.expr, context)
+    indices = visitor(expr.idx, context)
     # TODO: check out of bounds
     (column,) = plc.copying.gather(
         plc.Table([result]),
@@ -243,8 +238,8 @@ def _gather(expr: expr_nodes.Gather, context: DataFrame, visitor: ExprVisitor):
 
 @evaluate_expr.register
 def _filter(expr: expr_nodes.Filter, context: DataFrame, visitor: ExprVisitor):
-    result = evaluate_expr(visitor.node(expr.input), context, visitor)
-    mask = evaluate_expr(visitor.node(expr.by), context, visitor)
+    result = visitor(expr.input, context)
+    mask = visitor(expr.by, context)
     (column,) = plc.stream_compaction.apply_boolean_mask(
         plc.Table([result]), mask
     ).columns()
@@ -255,7 +250,7 @@ def _filter(expr: expr_nodes.Filter, context: DataFrame, visitor: ExprVisitor):
 # Do we need to handle it in schemas?
 @evaluate_expr.register
 def _cast(expr: expr_nodes.Cast, context: DataFrame, visitor: ExprVisitor):
-    column = evaluate_expr(visitor.node(expr.expr), context, visitor)
+    column = visitor(expr.expr, context)
     dtype = to_pylibcudf_dtype(expr.dtype)
     return plc.unary.cast(column, dtype)
 
@@ -268,7 +263,7 @@ def _column(expr: expr_nodes.Column, context: DataFrame, visitor: ExprVisitor):
 @evaluate_expr.register
 def _agg(expr: expr_nodes.Agg, context: DataFrame, visitor: ExprVisitor):
     name = expr.name
-    column = evaluate_expr(visitor.node(expr.arguments), context, visitor)
+    column = visitor(expr.arguments, context)
     # TODO: handle options
     options = expr.options
 
@@ -404,9 +399,9 @@ def _as_plc(val):
 def _binop(
     expr: expr_nodes.BinaryExpr, context: DataFrame, visitor: ExprVisitor
 ):
-    lop = evaluate_expr(visitor.node(expr.left), context, visitor)
+    lop = visitor(expr.left, context)
     op = expr.op
-    rop = evaluate_expr(visitor.node(expr.right), context, visitor)
+    rop = visitor(expr.right, context)
     # TODO: Fix dtype logic below to not be mixing pylibcudf and cudf types.
     # Probably easiest after we've fully switched over scalars too.
     try:
@@ -454,7 +449,7 @@ def agg_depth(agg, visitor: ExprVisitor) -> int:
         If an aggregation request is nested inside another aggregation
         request, or an unhandled expression is seen.
     """
-    agg = visitor.node(agg)
+    agg = visitor.visitor.view_expression(agg)
     if isinstance(agg, expr_nodes.Column):
         return 0
     elif isinstance(agg, expr_nodes.Alias):
@@ -499,7 +494,7 @@ def collect_agg(
     on the list of aggregations to evaluate with the new
     aggregation-enabled dataframe context.
     """
-    agg = visitor.node(node)
+    agg = visitor.visitor.view_expression(node)
     if isinstance(agg, expr_nodes.Column):
         return (
             [context[agg.name]],
@@ -645,7 +640,7 @@ def _post_aggregate(
                 mapping.append((agg, newcol))
     context = DataFrame(context)
     v = visitor.with_replacements(mapping)
-    return [evaluate_expr(v.node(agg), context, v) for agg in aggs]
+    return [v(agg, context) for agg in aggs]
 
 
 def _rolling(
