@@ -30,7 +30,7 @@ from cudf_polars.utils import (
 )
 
 if TYPE_CHECKING:
-    from typing_extensions import Self
+    from collections.abc import Sequence
 
     from cudf_polars.typing import ColumnType, Expr, Visitor
 
@@ -45,6 +45,39 @@ class ExprVisitor:
     def __init__(self, visitor: Visitor):
         self.visitor = visitor
         self.in_groupby = False
+
+    def add_expressions(
+        self, expressions: Sequence[Expr]
+    ) -> tuple[list[int], int]:
+        """
+        Add expressions to the expression graph.
+
+        Parameters
+        ----------
+        expressions
+            List of expressions to add
+
+        Returns
+        -------
+        tuple of list of node ids and the total number of node ids in the
+        expression graph after adding the expressions.
+        """
+        return self.visitor.add_expressions(expressions)
+
+    def set_mapping(self, mapping: list[int]):
+        """
+        Set the node mapping for rewiring the expression graph.
+
+        Parameters
+        ----------
+        mapping
+            List mapping old expression ids to new ones.
+        """
+        self.visitor.set_expr_mapping(mapping)
+
+    def unset_mapping(self):
+        """Unset the node mapping."""
+        self.visitor.unset_expr_mapping()
 
     def __call__(self, node: int, context: DataFrame) -> ColumnType:
         """
@@ -62,21 +95,6 @@ class ExprVisitor:
         New column as the evaluation of the expression.
         """
         return evaluate_expr(self.visitor.view_expression(node), context, self)
-
-    def with_replacements(self, mapping: list[tuple[int, Expr]]) -> Self:
-        """
-        Return a new visitor with nodes replaced by new ones.
-
-        Parameters
-        ----------
-        mapping
-            List of pairs mapping node ids to their replacement expression.
-
-        Returns
-        -------
-        New node visitor with replaced expressions.
-        """
-        return type(self)(self.visitor.replace_expressions(mapping))
 
 
 @singledispatch
@@ -622,8 +640,15 @@ def _post_aggregate(
             for agg in agg_expr:
                 mapping.append((agg, newcol))
     context = DataFrame(context)
-    v = visitor.with_replacements(mapping)
-    return [v(agg, context) for agg in aggs]
+    old_nodes, new_cols = zip(*mapping)
+    (new_nodes, num_nodes) = visitor.add_expressions(new_cols)
+    aggmap = list(range(num_nodes))
+    for old, new in zip(old_nodes, new_nodes):
+        aggmap[old] = new
+    visitor.set_mapping(aggmap)
+    result = [visitor(agg, context) for agg in aggs]
+    visitor.unset_mapping()
+    return result
 
 
 def _rolling(
