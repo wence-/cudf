@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-License-Identifier: Apache-2.0
+
 import operator
 from datetime import datetime
 
@@ -96,7 +99,9 @@ def test_rolling(ldf_datetime):
 
 
 def test_groupby_rolling(ldf_datetime):
-    out = ldf_datetime.rolling(index_column="dt", period="2d", by="b").agg(
+    out = ldf_datetime.rolling(
+        index_column="dt", period="2d", group_by="b"
+    ).agg(
         [
             pl.sum("a").alias("sum_a"),
             pl.min("a").alias("min_a"),
