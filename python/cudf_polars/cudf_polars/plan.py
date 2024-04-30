@@ -121,14 +121,17 @@ class PlanVisitor(NamedTuple):
             Node to evaluate (optional), if not provided uses the internal
             visitor's "current" node.
 
+        Notes
+        -----
+        Side-effectfully modifies the visitor to set the current node.
+
         Returns
         -------
         New dataframe giving the evaluation of the plan.
         """
-        if n is None:
-            node = self.visitor.view_current_node()
-        else:
-            node = self.visitor.view_node(n)
+        if n is not None:
+            self.visitor.set_node(n)
+        node = self.visitor.view_current_node()
         return _execute_plan(node, self)
 
     def record(self, name: str):
@@ -200,8 +203,6 @@ def _python_scan(plan: nodes.PythonScan, visitor: PlanVisitor):
     with visitor.record("PythonScan"):
         (
             scan_fn,
-            schema,
-            output_schema,
             with_columns,
             is_pyarrow,
             predicate,
@@ -211,6 +212,8 @@ def _python_scan(plan: nodes.PythonScan, visitor: PlanVisitor):
         if is_pyarrow:
             raise NotImplementedError("Don't know what to do here")
         context = scan_fn(with_columns, predicate, nrows)
+        if not isinstance(context, DataFrame):
+            raise TypeError(f"Don't know how to handle a {type(context)}")
         if predicate is not None:
             mask = visitor.expr_visitor(predicate.node, context)
             return context.filter(mask)
@@ -227,7 +230,7 @@ def _scan(plan: nodes.Scan, visitor: PlanVisitor):
         n_rows = options.n_rows
         with_columns = options.with_columns
         row_index = options.row_index
-        schema = plan.output_schema
+        schema = visitor.visitor.get_schema()
         # TODO: Send all the options through to the libcudf readers where appropriate
         if n_rows is not None:
             # TODO: read_csv supports n_rows, but if we have more than one
@@ -422,7 +425,7 @@ def _join(plan: nodes.Join, visitor: PlanVisitor):
         right_on = plc.Table(
             [visitor.expr_visitor(e.node, right) for e in plan.right_on]
         )
-        how, join_nulls, zlice, suffix = plan.options
+        how, join_nulls, zlice, suffix, coalesce_key_columns = plan.options
         null_equality = (
             plc.types.NullEquality.EQUAL
             if join_nulls
@@ -431,9 +434,7 @@ def _join(plan: nodes.Join, visitor: PlanVisitor):
         suffix = "_right" if suffix is None else suffix
         if how == "cross":
             raise NotImplementedError("cross join not implemented")
-        coalesce_key_columns = True
-        if how == "outer":
-            coalesce_key_columns = False
+        if how == "outer" and not coalesce_key_columns:
             raise NotImplementedError("Non-coalescing outer join")
         elif how == "outer_coalesce":
             how = "outer"
@@ -576,7 +577,8 @@ def _sort(plan: nodes.Sort, visitor: PlanVisitor):
         sort_keys = [
             visitor.expr_visitor(e.node, result) for e in plan.by_column
         ]
-        (stable, nulls_last, descending, zlice) = plan.args
+        (descending, nulls_last, stable) = plan.sort_options
+        zlice = plan.slice
         descending, column_order, null_precedence = sort_order(
             descending, nulls_last=nulls_last, num_keys=len(sort_keys)
         )
@@ -632,8 +634,8 @@ def _filter(plan: nodes.Filter, visitor: PlanVisitor):
 
 @_execute_plan.register
 def _simple_projection(plan: nodes.SimpleProjection, visitor: PlanVisitor):
+    schema = visitor.visitor.get_schema()
     result = visitor(plan.input)
-    schema = plan.columns
     with visitor.record("simple_projection"):
         return DataFrame({name: result[name] for name in schema})
 
@@ -708,7 +710,7 @@ def _map_function(plan: nodes.MapFunction, visitor: PlanVisitor):
     elif typ == "explode":
         context = visitor(plan.input)
         with profiler:
-            column_names, schema = args
+            (column_names,) = args
             if len(column_names) > 1:
                 # TODO: straightforward, but need to error check
                 # polars requires that all to-explode columns have the

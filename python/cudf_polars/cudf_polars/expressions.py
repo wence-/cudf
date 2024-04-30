@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from enum import IntEnum, auto
 from functools import singledispatch
 from typing import TYPE_CHECKING
 
@@ -35,16 +36,58 @@ if TYPE_CHECKING:
     from cudf_polars.typing import ColumnType, Expr, Visitor
 
 
+class ExecutionContext(IntEnum):
+    """Tag for the current execution context."""
+
+    GROUPBY = auto()
+    "Executing inside a group_by expression."
+    ROLLING = auto()
+    "Executing inside a rolling expression."
+    DATAFRAME = auto()
+    "Executing on the whole dataframe."
+
+
 class ExprVisitor:
     """Object holding rust visitor and utility methods."""
 
-    __slots__ = ("visitor", "in_groupby")
+    __slots__ = ("visitor", "context", "node_stack")
     visitor: Visitor
-    in_groupby: bool
+    context: ExecutionContext
+    node_stack: list[int]
+
+    class _with_context:
+        def __init__(self, context: ExecutionContext, visitor: ExprVisitor):
+            self.context = context
+            self.visitor = visitor
+
+        def __enter__(self):
+            self.visitor.context, self.context = (
+                self.context,
+                self.visitor.context,
+            )
+
+        def __exit__(self, *args):
+            self.visitor.context = self.context
 
     def __init__(self, visitor: Visitor):
         self.visitor = visitor
-        self.in_groupby = False
+        self.context = ExecutionContext.DATAFRAME
+        self.node_stack = []
+
+    def with_context(self, context: ExecutionContext):
+        """
+        Context manager for setting the execution context of the visitor.
+
+        Parameters
+        ----------
+        context
+            New execution context
+
+        Returns
+        -------
+        context manager that sets and restores the execution context.
+        """
+        return self._with_context(context, self)
 
     def add_expressions(
         self, expressions: Sequence[Expr]
@@ -94,7 +137,17 @@ class ExprVisitor:
         -------
         New column as the evaluation of the expression.
         """
-        return evaluate_expr(self.visitor.view_expression(node), context, self)
+        self.node_stack.append(node)
+        result = evaluate_expr(
+            self.visitor.view_expression(node), context, self
+        )
+        self.node_stack.pop()
+        return result
+
+    @property
+    def dtype(self):
+        """Return the datatype of the current expression node."""
+        return self.visitor.get_dtype(self.node_stack[-1])
 
 
 @singledispatch
@@ -310,11 +363,6 @@ def _expr_function(
         # TODO: tracking sortedness
         (column,) = arguments
         return column
-        # (name,) = data.keys()
-        # (flag,) = fargs
-        # return data.set_sorted(
-        #     {name: getattr(DataFrame.IsSorted, flag.upper())}
-        # )
     elif fname in BOOLEAN_FUNCTIONS:
         return boolean_function(fname, arguments, fargs)
     else:
@@ -365,33 +413,26 @@ def _literal(
 
 @evaluate_expr.register
 def _sort(expr: expr_nodes.Sort, context: DataFrame, visitor: ExprVisitor):
-    if visitor.in_groupby:
-        raise NotImplementedError("sort inside groupby")
+    if visitor.context is not ExecutionContext.DATAFRAME:
+        raise NotImplementedError("sort inside groupby/rolling")
     to_sort = visitor(expr.expr, context)
     (stable, nulls_last, descending) = expr.options
     descending, column_order, null_precedence = sort_order(
         [descending], nulls_last=nulls_last, num_keys=1
     )
     do_sort = plc.sorting.stable_sort if stable else plc.sorting.sort
-    result = do_sort(to_sort.to_pylibcudf(), column_order, null_precedence)
+    (result,) = do_sort(
+        plc.Table([to_sort]), column_order, null_precedence
+    ).columns()
     return result
-    # TODO: track sortedness
-    # flag = (
-    #     DataFrame.IsSorted.DESCENDING
-    #     if descending
-    #     else DataFrame.IsSorted.ASCENDING
-    # )
-    # return DataFrame.from_pylibcudf(to_sort.names(), result).set_sorted(
-    #     {name: flag}
-    # )
 
 
 @evaluate_expr.register
 def _sort_by(
     expr: expr_nodes.SortBy, context: DataFrame, visitor: ExprVisitor
 ):
-    if visitor.in_groupby:
-        raise NotImplementedError("sort_by inside groupby")
+    if visitor.context is not ExecutionContext.DATAFRAME:
+        raise NotImplementedError("sort_by inside groupby/rolling")
     to_sort = visitor(expr.expr, context)
     descending = expr.descending
     sort_keys = [visitor(e, context) for e in expr.by]
@@ -399,12 +440,13 @@ def _sort_by(
     descending, column_order, null_precedence = sort_order(
         descending, nulls_last=True, num_keys=len(sort_keys)
     )
-    return plc.sorting.sort_by_key(
+    (result,) = plc.sorting.sort_by_key(
         plc.Table([to_sort]),
         plc.Table(sort_keys),
         column_order,
         null_precedence,
     )
+    return result
 
 
 @evaluate_expr.register
@@ -432,8 +474,8 @@ def _gather(expr: expr_nodes.Gather, context: DataFrame, visitor: ExprVisitor):
 
 @evaluate_expr.register
 def _filter(expr: expr_nodes.Filter, context: DataFrame, visitor: ExprVisitor):
-    if visitor.in_groupby:
-        raise NotImplementedError("filter inside groupby")
+    if visitor.context is not ExecutionContext.DATAFRAME:
+        raise NotImplementedError("filter inside groupby/rolling")
     result = visitor(expr.input, context)
     mask = visitor(expr.by, context)
     (column,) = plc.stream_compaction.apply_boolean_mask(
@@ -458,8 +500,8 @@ def _column(expr: expr_nodes.Column, context: DataFrame, visitor: ExprVisitor):
 
 @evaluate_expr.register
 def _agg(expr: expr_nodes.Agg, context: DataFrame, visitor: ExprVisitor):
-    if visitor.in_groupby:
-        raise NotImplementedError("nested agg in group_by")
+    if visitor.context is not ExecutionContext.DATAFRAME:
+        raise NotImplementedError("nested agg in groupby/rolling")
     name = expr.name
     column = visitor(expr.arguments, context)
     # TODO: handle options
@@ -711,9 +753,8 @@ def collect_agg(
             return [*lcol, *rcol], [*lreq, *rreq]
         else:
             # TODO: Ugly non-local method of saying "we're in a groupby, disallow"
-            visitor.in_groupby = True
-            column = evaluate_expr(agg, context, visitor)
-            visitor.in_groupby = False
+            with visitor.with_context(ExecutionContext.GROUPBY):
+                column = evaluate_expr(agg, context, visitor)
             return [column], [(plc.aggregation.collect_list(), node)]
     elif isinstance(agg, expr_nodes.Literal):
         # Scalar value, constant across the groups

@@ -114,6 +114,10 @@ ignore = [
   "W191",
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# No need for docstrings on tests
+"tests/**.py" = ["D"]
+
 [tool.ruff.lint.pycodestyle]
 max-doc-length = 85
 

@@ -7,14 +7,8 @@ from datetime import datetime
 import numpy as np
 import polars as pl
 import pytest
-from polars.testing.asserts import assert_frame_equal
 
-from cudf_polars.patch import _WAS_PATCHED
-
-if not _WAS_PATCHED:
-    # We could also just patch in the test, but this approach provides a canary for
-    # failures with patching that we might observe in trying this with other tests.
-    raise RuntimeError("Patch was not applied")
+from cudf_polars.testing.asserts import assert_gpu_result_equal
 
 
 @pytest.fixture()
@@ -52,12 +46,6 @@ def df():
 @pytest.fixture()
 def ldf(df):
     return df.lazy()
-
-
-def assert_gpu_result_equal(lazydf, **kwargs):
-    expect = lazydf.collect(use_gpu=False)
-    got = lazydf.collect(use_gpu=True, cpu_fallback=False)
-    assert_frame_equal(expect, got, **kwargs)
 
 
 @pytest.mark.parametrize("dtype", ["int32", "int64", "float32", "float64"])
