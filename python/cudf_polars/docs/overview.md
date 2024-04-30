@@ -15,13 +15,12 @@ You will need:
 
 ## Installing polars
 
-We will need to build polars from source, in particular [this
-branch](https://github.com/wence-/polars/tree/wence/fea/nodes) until it is merged.
+We will need to build polars from source. Until things settle down,
+live at `HEAD`.
 
 ```sh
-git clone https://github.com/wence-/polars
+git clone https://github.com/pola-rs/polars
 cd polars
-git checkout wence/fea/nodes
 ```
 
 We will install build dependencies in the same environment that we created for
@@ -187,4 +186,9 @@ stability at the moment, so there is little documentation.
 ## Whole frame expression evaluation
 
 Outside of a group_by or rolling window context, implementing a new handler for
-an expression is quite straightforward. We must determine
+an expression is quite straightforward. We must determine what the
+semantics are and map the information contained in an expression node
+onto the appropriate (sequence of) pylibcudf calls. Our goal is to
+have no dependencies outside of pylibcudf, so try not to use code from
+cudf-classic or pyarrow. Some existing code does this, but it is being
+removed.
