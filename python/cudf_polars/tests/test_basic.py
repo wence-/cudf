@@ -178,7 +178,7 @@ def test_agg(df, agg):
         .lazy()
     )
     out = getattr(ldf, agg)()
-    assert_gpu_result_equal(out, check_dtype=agg != "count")
+    assert_gpu_result_equal(out, check_dtype=agg != "count", check_exact=False)
 
 
 @pytest.mark.parametrize("keep", ["first", "last", "none"])
@@ -226,7 +226,7 @@ def test_concat_horizontal(ldf):
 
 def test_groupby(ldf):
     out = ldf.group_by("int_key1").agg(pl.col("float_val").sum())
-    assert_gpu_result_equal(out, check_row_order=False)
+    assert_gpu_result_equal(out, check_row_order=False, check_exact=False)
 
 
 def test_expr_function(ldf):

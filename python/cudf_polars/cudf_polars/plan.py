@@ -436,8 +436,6 @@ def _join(plan: nodes.Join, visitor: PlanVisitor):
             raise NotImplementedError("cross join not implemented")
         if how == "outer" and not coalesce_key_columns:
             raise NotImplementedError("Non-coalescing outer join")
-        elif how == "outer_coalesce":
-            how = "outer"
         joiner, left_policy, right_policy = {
             "inner": (
                 plc.join.inner_join,
@@ -738,6 +736,7 @@ def _union(plan: nodes.Union, visitor: PlanVisitor):
         all_names = list(
             itertools.chain.from_iterable(t.names() for t in input_tables)
         )
+        # TODO: use polars schema
         schema = reduce(operator.or_, (t.schema() for t in input_tables))
         tables = [
             plc.Table(
@@ -777,10 +776,6 @@ def _hconcat(plan: nodes.HConcat, visitor: PlanVisitor):
 @_execute_plan.register
 def _extcontext(plan: nodes.ExtContext, visitor: PlanVisitor):
     result = visitor(plan.input)
-    # TODO: This is not right, e.g. if there is a projection that
-    # selects some subset of the columns. But it seems it is not
-    # pushed inside the ExtContext node, so we need some other way of
-    # handling that.
     return DataFrame(
         reduce(
             operator.or_,
