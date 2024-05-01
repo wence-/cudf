@@ -20,7 +20,7 @@ from cudf._lib.types import (
 from cudf.core.column import as_column
 from cudf.utils import cudautils
 from polars import polars as plrs
-from polars.polars import expr_nodes
+from polars.polars import _expr_nodes
 
 from cudf_polars.dataframe import DataFrame
 from cudf_polars.utils import (
@@ -342,7 +342,7 @@ def boolean_function(
 
 @evaluate_expr.register
 def _expr_function(
-    expr: expr_nodes.Function, context: DataFrame, visitor: ExprVisitor
+    expr: _expr_nodes.Function, context: DataFrame, visitor: ExprVisitor
 ):
     fname, *fargs = expr.function_data
     arguments = [visitor(e, context) for e in expr.input]
@@ -371,14 +371,14 @@ def _expr_function(
 
 @evaluate_expr.register
 def _expr_window(
-    expr: expr_nodes.Window, context: DataFrame, visitor: ExprVisitor
+    expr: _expr_nodes.Window, context: DataFrame, visitor: ExprVisitor
 ):
-    if isinstance(expr.options, expr_nodes.PyWindowMapping):
+    if isinstance(expr.options, _expr_nodes.PyWindowMapping):
         raise NotImplementedError(".over() not supported")
     (col,), (requests,), aggs_to_replace = collect_aggs(
         [expr.function], context, visitor
     )
-    if isinstance(expr.options, expr_nodes.PyRollingGroupOptions):
+    if isinstance(expr.options, _expr_nodes.PyRollingGroupOptions):
         # Rolling window plan node saves the partition_by column, but
         # only for the purposes of stashing it for the optimiser. We
         # should ignore it here.
@@ -396,14 +396,14 @@ def _expr_window(
 
 
 @evaluate_expr.register
-def _alias(expr: expr_nodes.Alias, context: DataFrame, visitor: ExprVisitor):
+def _alias(expr: _expr_nodes.Alias, context: DataFrame, visitor: ExprVisitor):
     # TODO: optimizer should strip these from plan nodes
     return visitor(expr.expr, context)
 
 
 @evaluate_expr.register
 def _literal(
-    expr: expr_nodes.Literal, context: DataFrame, visitor: ExprVisitor
+    expr: _expr_nodes.Literal, context: DataFrame, visitor: ExprVisitor
 ):
     # TODO: This is bad because it's lying about the Column property
     dtype = to_cudf_dtype(expr.dtype)
@@ -412,7 +412,7 @@ def _literal(
 
 
 @evaluate_expr.register
-def _sort(expr: expr_nodes.Sort, context: DataFrame, visitor: ExprVisitor):
+def _sort(expr: _expr_nodes.Sort, context: DataFrame, visitor: ExprVisitor):
     if visitor.context is not ExecutionContext.DATAFRAME:
         raise NotImplementedError("sort inside groupby/rolling")
     to_sort = visitor(expr.expr, context)
@@ -429,7 +429,7 @@ def _sort(expr: expr_nodes.Sort, context: DataFrame, visitor: ExprVisitor):
 
 @evaluate_expr.register
 def _sort_by(
-    expr: expr_nodes.SortBy, context: DataFrame, visitor: ExprVisitor
+    expr: _expr_nodes.SortBy, context: DataFrame, visitor: ExprVisitor
 ):
     if visitor.context is not ExecutionContext.DATAFRAME:
         raise NotImplementedError("sort_by inside groupby/rolling")
@@ -450,7 +450,9 @@ def _sort_by(
 
 
 @evaluate_expr.register
-def _gather(expr: expr_nodes.Gather, context: DataFrame, visitor: ExprVisitor):
+def _gather(
+    expr: _expr_nodes.Gather, context: DataFrame, visitor: ExprVisitor
+):
     # TODO: (maybe) the libcudf call is better as a table gather,
     # rather than a sequence of column gathers.
     # However, polars delivers a list of single-column gather
@@ -473,7 +475,9 @@ def _gather(expr: expr_nodes.Gather, context: DataFrame, visitor: ExprVisitor):
 
 
 @evaluate_expr.register
-def _filter(expr: expr_nodes.Filter, context: DataFrame, visitor: ExprVisitor):
+def _filter(
+    expr: _expr_nodes.Filter, context: DataFrame, visitor: ExprVisitor
+):
     if visitor.context is not ExecutionContext.DATAFRAME:
         raise NotImplementedError("filter inside groupby/rolling")
     result = visitor(expr.input, context)
@@ -487,19 +491,21 @@ def _filter(expr: expr_nodes.Filter, context: DataFrame, visitor: ExprVisitor):
 # TODO: in unoptimized plans sometimes the cast doesn't appear?
 # Do we need to handle it in schemas?
 @evaluate_expr.register
-def _cast(expr: expr_nodes.Cast, context: DataFrame, visitor: ExprVisitor):
+def _cast(expr: _expr_nodes.Cast, context: DataFrame, visitor: ExprVisitor):
     column = visitor(expr.expr, context)
     dtype = to_pylibcudf_dtype(expr.dtype)
     return plc.unary.cast(column, dtype)
 
 
 @evaluate_expr.register
-def _column(expr: expr_nodes.Column, context: DataFrame, visitor: ExprVisitor):
+def _column(
+    expr: _expr_nodes.Column, context: DataFrame, visitor: ExprVisitor
+):
     return context[expr.name]
 
 
 @evaluate_expr.register
-def _agg(expr: expr_nodes.Agg, context: DataFrame, visitor: ExprVisitor):
+def _agg(expr: _expr_nodes.Agg, context: DataFrame, visitor: ExprVisitor):
     if visitor.context is not ExecutionContext.DATAFRAME:
         raise NotImplementedError("nested agg in groupby/rolling")
     name = expr.name
@@ -578,47 +584,53 @@ def _agg(expr: expr_nodes.Agg, context: DataFrame, visitor: ExprVisitor):
 
 BINOP_MAPPING = {
     # (binop, result_dtype) # => None means same as input
-    expr_nodes.PyOperator.Eq: (plc.binaryop.BinaryOperator.EQUAL, np.bool_),
-    expr_nodes.PyOperator.EqValidity: (
+    _expr_nodes.PyOperator.Eq: (plc.binaryop.BinaryOperator.EQUAL, np.bool_),
+    _expr_nodes.PyOperator.EqValidity: (
         plc.binaryop.BinaryOperator.NULL_EQUALS,
         np.bool_,
     ),
-    expr_nodes.PyOperator.NotEq: (
+    _expr_nodes.PyOperator.NotEq: (
         plc.binaryop.BinaryOperator.NOT_EQUAL,
         np.bool_,
     ),
-    # expr_nodes.PyOperator.NotEqValidity: (plc.binaryop.BinaryOperator., None),
-    expr_nodes.PyOperator.Lt: (plc.binaryop.BinaryOperator.LESS, np.bool_),
-    expr_nodes.PyOperator.LtEq: (
+    # _expr_nodes.PyOperator.NotEqValidity: (plc.binaryop.BinaryOperator., None),
+    _expr_nodes.PyOperator.Lt: (plc.binaryop.BinaryOperator.LESS, np.bool_),
+    _expr_nodes.PyOperator.LtEq: (
         plc.binaryop.BinaryOperator.LESS_EQUAL,
         np.bool_,
     ),
-    expr_nodes.PyOperator.Gt: (plc.binaryop.BinaryOperator.GREATER, np.bool_),
-    expr_nodes.PyOperator.GtEq: (
+    _expr_nodes.PyOperator.Gt: (plc.binaryop.BinaryOperator.GREATER, np.bool_),
+    _expr_nodes.PyOperator.GtEq: (
         plc.binaryop.BinaryOperator.GREATER_EQUAL,
         np.bool_,
     ),
-    expr_nodes.PyOperator.Plus: (plc.binaryop.BinaryOperator.ADD, None),
-    expr_nodes.PyOperator.Minus: (plc.binaryop.BinaryOperator.SUB, None),
-    expr_nodes.PyOperator.Multiply: (plc.binaryop.BinaryOperator.MUL, None),
-    expr_nodes.PyOperator.Divide: (plc.binaryop.BinaryOperator.DIV, None),
-    expr_nodes.PyOperator.TrueDivide: (
+    _expr_nodes.PyOperator.Plus: (plc.binaryop.BinaryOperator.ADD, None),
+    _expr_nodes.PyOperator.Minus: (plc.binaryop.BinaryOperator.SUB, None),
+    _expr_nodes.PyOperator.Multiply: (plc.binaryop.BinaryOperator.MUL, None),
+    _expr_nodes.PyOperator.Divide: (plc.binaryop.BinaryOperator.DIV, None),
+    _expr_nodes.PyOperator.TrueDivide: (
         plc.binaryop.BinaryOperator.TRUE_DIV,
         None,
     ),
-    expr_nodes.PyOperator.FloorDivide: (
+    _expr_nodes.PyOperator.FloorDivide: (
         plc.binaryop.BinaryOperator.FLOOR_DIV,
         None,
     ),
-    expr_nodes.PyOperator.Modulus: (plc.binaryop.BinaryOperator.PYMOD, None),
-    expr_nodes.PyOperator.And: (plc.binaryop.BinaryOperator.BITWISE_AND, None),
-    expr_nodes.PyOperator.Or: (plc.binaryop.BinaryOperator.BITWISE_OR, None),
-    expr_nodes.PyOperator.Xor: (plc.binaryop.BinaryOperator.BITWISE_XOR, None),
-    expr_nodes.PyOperator.LogicalAnd: (
+    _expr_nodes.PyOperator.Modulus: (plc.binaryop.BinaryOperator.PYMOD, None),
+    _expr_nodes.PyOperator.And: (
+        plc.binaryop.BinaryOperator.BITWISE_AND,
+        None,
+    ),
+    _expr_nodes.PyOperator.Or: (plc.binaryop.BinaryOperator.BITWISE_OR, None),
+    _expr_nodes.PyOperator.Xor: (
+        plc.binaryop.BinaryOperator.BITWISE_XOR,
+        None,
+    ),
+    _expr_nodes.PyOperator.LogicalAnd: (
         plc.binaryop.BinaryOperator.LOGICAL_AND,
         None,
     ),
-    expr_nodes.PyOperator.LogicalOr: (
+    _expr_nodes.PyOperator.LogicalOr: (
         plc.binaryop.BinaryOperator.LOGICAL_OR,
         None,
     ),
@@ -637,7 +649,7 @@ def _as_plc(val):
 
 @evaluate_expr.register
 def _binop(
-    expr: expr_nodes.BinaryExpr, context: DataFrame, visitor: ExprVisitor
+    expr: _expr_nodes.BinaryExpr, context: DataFrame, visitor: ExprVisitor
 ):
     lop = visitor(expr.left, context)
     op = expr.op
@@ -696,15 +708,15 @@ def collect_agg(
     aggregation-enabled dataframe context.
     """
     agg = visitor.visitor.view_expression(node)
-    if isinstance(agg, expr_nodes.Column):
+    if isinstance(agg, _expr_nodes.Column):
         return (
             [context[agg.name]],
             [(plc.aggregation.collect_list(), node)],
         )
-    elif isinstance(agg, expr_nodes.Alias):
+    elif isinstance(agg, _expr_nodes.Alias):
         # TODO: should we see this?
         return collect_agg(agg.expr, context, depth, visitor)
-    elif isinstance(agg, expr_nodes.Len):
+    elif isinstance(agg, _expr_nodes.Len):
         return (
             [placeholder_column(context.num_rows())],
             [
@@ -716,7 +728,7 @@ def collect_agg(
                 )
             ],
         )
-    elif isinstance(agg, expr_nodes.Agg):
+    elif isinstance(agg, _expr_nodes.Agg):
         if depth > 0:
             raise NotImplementedError("Nested aggregations not yet supported")
         request = agg.name
@@ -744,7 +756,7 @@ def collect_agg(
             # TODO: ensure all options are handled correctly
             request = getattr(plc.aggregation, request)()
         return column, [(request, node)]
-    elif isinstance(agg, expr_nodes.BinaryExpr):
+    elif isinstance(agg, _expr_nodes.BinaryExpr):
         # TODO: no nested agg(binop(agg)) right now
         if depth == 0:
             # Not inside an aggregation yet
@@ -756,7 +768,7 @@ def collect_agg(
             with visitor.with_context(ExecutionContext.GROUPBY):
                 column = evaluate_expr(agg, context, visitor)
             return [column], [(plc.aggregation.collect_list(), node)]
-    elif isinstance(agg, expr_nodes.Literal):
+    elif isinstance(agg, _expr_nodes.Literal):
         # Scalar value, constant across the groups
         return [], []
     else:

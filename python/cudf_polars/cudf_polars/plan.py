@@ -15,7 +15,7 @@ import nvtx
 import polars as pl
 import pyarrow as pa
 from cudf.core.column import as_column, column_empty
-from polars.polars import nodes
+from polars.polars import _ir_nodes
 
 from cudf_polars.dataframe import DataFrame
 from cudf_polars.expressions import (
@@ -104,7 +104,7 @@ def _execute_plan(plan: Plan, visitor: PlanVisitor) -> DataFrame:
 
 
 @_execute_plan.register
-def _python_scan(plan: nodes.PythonScan, visitor: PlanVisitor):
+def _python_scan(plan: _ir_nodes.PythonScan, visitor: PlanVisitor):
     (
         scan_fn,
         with_columns,
@@ -126,7 +126,7 @@ def _python_scan(plan: nodes.PythonScan, visitor: PlanVisitor):
 
 
 @_execute_plan.register
-def _scan(plan: nodes.Scan, visitor: PlanVisitor):
+def _scan(plan: _ir_nodes.Scan, visitor: PlanVisitor):
     scan_type = plan.scan_type
     paths = plan.paths
     options = plan.file_options
@@ -174,7 +174,7 @@ def _scan(plan: nodes.Scan, visitor: PlanVisitor):
 
 
 @_execute_plan.register
-def _cache(plan: nodes.Cache, visitor: PlanVisitor):
+def _cache(plan: _ir_nodes.Cache, visitor: PlanVisitor):
     key = plan.id_
     cache = visitor.cache
     try:
@@ -184,7 +184,7 @@ def _cache(plan: nodes.Cache, visitor: PlanVisitor):
 
 
 @_execute_plan.register
-def _dataframescan(plan: nodes.DataFrameScan, visitor: PlanVisitor):
+def _dataframescan(plan: _ir_nodes.DataFrameScan, visitor: PlanVisitor):
     pdf = pl.DataFrame._from_pydf(plan.df)
     # Run column projection as zero-copy on the polars dataframe
     if plan.projection is not None:
@@ -216,7 +216,7 @@ def _dataframescan(plan: nodes.DataFrameScan, visitor: PlanVisitor):
 
 
 @_execute_plan.register
-def _select(plan: nodes.Select, visitor: PlanVisitor):
+def _select(plan: _ir_nodes.Select, visitor: PlanVisitor):
     context = visitor(plan.input)
     # TODO: loses sortedness properties
     for cse in plan.cse_expr:
@@ -230,7 +230,7 @@ def _select(plan: nodes.Select, visitor: PlanVisitor):
 
 
 @_execute_plan.register
-def _groupby(plan: nodes.GroupBy, visitor: PlanVisitor):
+def _groupby(plan: _ir_nodes.GroupBy, visitor: PlanVisitor):
     # Input frame to groupby
     context = visitor(plan.input)
     agg_names = [e.output_name for e in plan.aggs]
@@ -310,7 +310,7 @@ def _groupby(plan: nodes.GroupBy, visitor: PlanVisitor):
 
 
 @_execute_plan.register
-def _join(plan: nodes.Join, visitor: PlanVisitor):
+def _join(plan: _ir_nodes.Join, visitor: PlanVisitor):
     left = visitor(plan.input_left)
     right = visitor(plan.input_right)
     left_on = plc.Table(
@@ -398,7 +398,7 @@ def _join(plan: nodes.Join, visitor: PlanVisitor):
 
 
 @_execute_plan.register
-def _hstack(plan: nodes.HStack, visitor: PlanVisitor):
+def _hstack(plan: _ir_nodes.HStack, visitor: PlanVisitor):
     result = visitor(plan.input)
     columns = {
         e.output_name: visitor.expr_visitor(e.node, result) for e in plan.exprs
@@ -408,7 +408,7 @@ def _hstack(plan: nodes.HStack, visitor: PlanVisitor):
 
 
 @_execute_plan.register
-def _distinct(plan: nodes.Distinct, visitor: PlanVisitor):
+def _distinct(plan: _ir_nodes.Distinct, visitor: PlanVisitor):
     result = visitor(plan.input)
     (keep, subset, maintain_order, zlice) = plan.options
     keep = {
@@ -455,7 +455,7 @@ def _distinct(plan: nodes.Distinct, visitor: PlanVisitor):
 
 
 @_execute_plan.register
-def _sort(plan: nodes.Sort, visitor: PlanVisitor):
+def _sort(plan: _ir_nodes.Sort, visitor: PlanVisitor):
     result = visitor(plan.input)
     input_col_ids = set(map(id, result.values()))
     sort_keys = [visitor.expr_visitor(e.node, result) for e in plan.by_column]
@@ -498,27 +498,27 @@ def _sort(plan: nodes.Sort, visitor: PlanVisitor):
 
 
 @_execute_plan.register
-def _slice(plan: nodes.Slice, visitor: PlanVisitor):
+def _slice(plan: _ir_nodes.Slice, visitor: PlanVisitor):
     result = visitor(plan.input)
     return result.slice(plan.offset, plan.len)
 
 
 @_execute_plan.register
-def _filter(plan: nodes.Filter, visitor: PlanVisitor):
+def _filter(plan: _ir_nodes.Filter, visitor: PlanVisitor):
     result = visitor(plan.input)
     mask = visitor.expr_visitor(plan.predicate.node, result)
     return result.filter(mask)
 
 
 @_execute_plan.register
-def _simple_projection(plan: nodes.SimpleProjection, visitor: PlanVisitor):
+def _simple_projection(plan: _ir_nodes.SimpleProjection, visitor: PlanVisitor):
     schema = visitor.visitor.get_schema()
     result = visitor(plan.input)
     return DataFrame({name: result[name] for name in schema})
 
 
 @_execute_plan.register
-def _map_function(plan: nodes.MapFunction, visitor: PlanVisitor):
+def _map_function(plan: _ir_nodes.MapFunction, visitor: PlanVisitor):
     typ, *args = plan.function
     if typ == "unnest":
         (to_unnest,) = args
@@ -548,7 +548,7 @@ def _map_function(plan: nodes.MapFunction, visitor: PlanVisitor):
         # and b.
         # We don't have that luxury so we assume we have a union, and
         # evaluate the pieces.
-        assert isinstance(pieces, nodes.Union)
+        assert isinstance(pieces, _ir_nodes.Union)
         first, *rest = (visitor(piece) for piece in pieces.inputs)
         (key_column,) = args
         column_names = first.names()
@@ -599,7 +599,7 @@ def _map_function(plan: nodes.MapFunction, visitor: PlanVisitor):
 
 
 @_execute_plan.register
-def _union(plan: nodes.Union, visitor: PlanVisitor):
+def _union(plan: _ir_nodes.Union, visitor: PlanVisitor):
     input_tables = [visitor(p) for p in plan.inputs]
     # ordered set
     all_names = list(
@@ -632,7 +632,7 @@ def _union(plan: nodes.Union, visitor: PlanVisitor):
 
 
 @_execute_plan.register
-def _hconcat(plan: nodes.HConcat, visitor: PlanVisitor):
+def _hconcat(plan: _ir_nodes.HConcat, visitor: PlanVisitor):
     return DataFrame(
         reduce(
             operator.or_,
@@ -643,7 +643,7 @@ def _hconcat(plan: nodes.HConcat, visitor: PlanVisitor):
 
 
 @_execute_plan.register
-def _extcontext(plan: nodes.ExtContext, visitor: PlanVisitor):
+def _extcontext(plan: _ir_nodes.ExtContext, visitor: PlanVisitor):
     result = visitor(plan.input)
     return DataFrame(
         reduce(
@@ -655,5 +655,5 @@ def _extcontext(plan: nodes.ExtContext, visitor: PlanVisitor):
 
 
 @_execute_plan.register
-def _sink(plan: nodes.Sink, visitor: PlanVisitor):
+def _sink(plan: _ir_nodes.Sink, visitor: PlanVisitor):
     raise NotImplementedError("We can never see this node")
