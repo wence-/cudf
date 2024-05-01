@@ -334,7 +334,7 @@ def boolean_function(
         return mask
     elif name == "not":
         return plc.unary.unary_operation(
-            *arguments, plc.unary.UnaryOpterator.NOT
+            *arguments, plc.unary.UnaryOperator.NOT
         )
     else:
         raise NotImplementedError(f"unary boolean function {name}")
