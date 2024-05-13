@@ -70,7 +70,7 @@ def patch_collect(use_gpu_default=False, cpu_fallback_default=True):
             # This can't fail
             visitor = ldf.visit()
             try:
-                gdf = execute_plan(visitor, profile=False)
+                gdf = execute_plan(visitor)
                 if return_on_gpu:
                     return gdf
                 else:

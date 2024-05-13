@@ -193,6 +193,79 @@ BOOLEAN_FUNCTIONS = {
     "not",
 }
 
+STRING_FUNCTIONS = {
+    "concathorizontal",
+    "concatvertical",
+    "contains",
+    "countmatches",
+    "endswith",
+    "explode",
+    "extract",
+    "extractall",
+    "extractgroups",
+    "find",
+    "tointeger",
+    "lenbytes",
+    "lenchars",
+    "lowercase",
+    "jsondecode",
+    "jsonpathmatch",
+    "replace",
+    "reverse",
+    "padstart",
+    "padend",
+    "slice",
+    "head",
+    "tail",
+    "hexencode",
+    "hexdecode",
+    "base64encode",
+    "base64decode",
+    "startswith",
+    "stripchars",
+    "stripcharsstart",
+    "stripcharsend",
+    "stripprefix",
+    "stripsuffix",
+    "splitexact",
+    "splitn",
+    "strptime",
+    "split",
+    "todecimal",
+    "titlecase",
+    "uppercase",
+    "zfill",
+    "containsmany",
+    "replacemany",
+}
+
+
+def string_function(
+    name: str, arguments: list[ColumnType], options
+) -> ColumnType:
+    """
+    Apply a string function to some arguments.
+
+    Parameters
+    ----------
+    name
+        Name of the function to apply
+    arguments
+        List of columns to apply to
+    options
+        Any options for the function
+
+    Returns
+    -------
+    New column.
+    """
+    if name == "uppercase":
+        return plc.strings.case.to_upper(*arguments)
+    elif name == "lowercase":
+        return plc.strings.case.to_lower(*arguments)
+    else:
+        raise NotImplementedError(f"string function {name}")
+
 
 def boolean_function(
     name: str, arguments: list[ColumnType], options
@@ -365,6 +438,8 @@ def _expr_function(
         return column
     elif fname in BOOLEAN_FUNCTIONS:
         return boolean_function(fname, arguments, fargs)
+    elif fname in STRING_FUNCTIONS:
+        return string_function(fname, arguments, fargs)
     else:
         raise NotImplementedError(f"Function expression {fname=}")
 
