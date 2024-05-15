@@ -193,51 +193,51 @@ BOOLEAN_FUNCTIONS = {
     "not",
 }
 
-STRING_FUNCTIONS = {
-    "concathorizontal",
-    "concatvertical",
-    "contains",
-    "countmatches",
-    "endswith",
-    "explode",
-    "extract",
-    "extractall",
-    "extractgroups",
-    "find",
-    "tointeger",
-    "lenbytes",
-    "lenchars",
-    "lowercase",
-    "jsondecode",
-    "jsonpathmatch",
-    "replace",
-    "reverse",
-    "padstart",
-    "padend",
-    "slice",
-    "head",
-    "tail",
-    "hexencode",
-    "hexdecode",
-    "base64encode",
-    "base64decode",
-    "startswith",
-    "stripchars",
-    "stripcharsstart",
-    "stripcharsend",
-    "stripprefix",
-    "stripsuffix",
-    "splitexact",
-    "splitn",
-    "strptime",
-    "split",
-    "todecimal",
-    "titlecase",
-    "uppercase",
-    "zfill",
-    "containsmany",
-    "replacemany",
-}
+STRING_FUNCTIONS = [
+    _expr_nodes.StringFunction.ConcatHorizontal,
+    _expr_nodes.StringFunction.ConcatVertical,
+    _expr_nodes.StringFunction.Contains,
+    _expr_nodes.StringFunction.CountMatches,
+    _expr_nodes.StringFunction.EndsWith,
+    _expr_nodes.StringFunction.Explode,
+    _expr_nodes.StringFunction.Extract,
+    _expr_nodes.StringFunction.ExtractAll,
+    _expr_nodes.StringFunction.ExtractGroups,
+    _expr_nodes.StringFunction.Find,
+    _expr_nodes.StringFunction.ToInteger,
+    _expr_nodes.StringFunction.LenBytes,
+    _expr_nodes.StringFunction.LenChars,
+    _expr_nodes.StringFunction.Lowercase,
+    _expr_nodes.StringFunction.JsonDecode,
+    _expr_nodes.StringFunction.JsonPathMatch,
+    _expr_nodes.StringFunction.Replace,
+    _expr_nodes.StringFunction.Reverse,
+    _expr_nodes.StringFunction.PadStart,
+    _expr_nodes.StringFunction.PadEnd,
+    _expr_nodes.StringFunction.Slice,
+    _expr_nodes.StringFunction.Head,
+    _expr_nodes.StringFunction.Tail,
+    _expr_nodes.StringFunction.HexEncode,
+    _expr_nodes.StringFunction.HexDecode,
+    _expr_nodes.StringFunction.Base64Encode,
+    _expr_nodes.StringFunction.Base64Decode,
+    _expr_nodes.StringFunction.StartsWith,
+    _expr_nodes.StringFunction.StripChars,
+    _expr_nodes.StringFunction.StripCharsStart,
+    _expr_nodes.StringFunction.StripCharsEnd,
+    _expr_nodes.StringFunction.StripPrefix,
+    _expr_nodes.StringFunction.StripSuffix,
+    _expr_nodes.StringFunction.SplitExact,
+    _expr_nodes.StringFunction.SplitN,
+    _expr_nodes.StringFunction.Strptime,
+    _expr_nodes.StringFunction.Split,
+    _expr_nodes.StringFunction.ToDecimal,
+    _expr_nodes.StringFunction.Titlecase,
+    _expr_nodes.StringFunction.Uppercase,
+    _expr_nodes.StringFunction.ZFill,
+    _expr_nodes.StringFunction.ContainsMany,
+    _expr_nodes.StringFunction.ReplaceMany,
+]
 
 
 def string_function(
@@ -259,9 +259,9 @@ def string_function(
     -------
     New column.
     """
-    if name == "uppercase":
+    if name == _expr_nodes.StringFunction.Uppercase:
         return plc.strings.case.to_upper(*arguments)
-    elif name == "lowercase":
+    elif name == _expr_nodes.StringFunction.Lowercase:
         return plc.strings.case.to_lower(*arguments)
     else:
         raise NotImplementedError(f"string function {name}")
@@ -436,10 +436,10 @@ def _expr_function(
         # TODO: tracking sortedness
         (column,) = arguments
         return column
-    elif fname in BOOLEAN_FUNCTIONS:
-        return boolean_function(fname, arguments, fargs)
     elif fname in STRING_FUNCTIONS:
         return string_function(fname, arguments, fargs)
+    elif fname in BOOLEAN_FUNCTIONS:
+        return boolean_function(fname, arguments, fargs)
     else:
         raise NotImplementedError(f"Function expression {fname=}")
 
