@@ -18,6 +18,7 @@ set(cython_sources
     column.pyx
     concatenate.pyx
     copying.pyx
+    datetime.pyx
     filling.pyx
     gpumemoryview.pyx
     groupby.pyx
@@ -29,6 +30,7 @@ set(cython_sources
     replace.pyx
     reshape.pyx
     rolling.pyx
+    round.pyx
     scalar.pyx
     search.pyx
     stream_compaction.pyx
