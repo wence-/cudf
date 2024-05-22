@@ -43,6 +43,8 @@ __all__ = [
     "Col",
     "BooleanFunction",
     "StringFunction",
+    "TemporalFunction",
+    "UnaryFunction",
     "Sort",
     "SortBy",
     "Gather",
@@ -51,6 +53,7 @@ __all__ = [
     "GroupedRollingWindow",
     "Cast",
     "Agg",
+    "Ternary",
     "BinOp",
 ]
 
@@ -362,6 +365,10 @@ class Literal(Expr):
         # datatype of pyarrow scalar is correct by construction.
         return Scalar(plc.interop.from_arrow(self.value))  # type: ignore
 
+    def collect_agg(self, *, depth: int) -> AggInfo:
+        """Collect information about aggregations in groupbys."""
+        return AggInfo([])
+
 
 class Col(Expr):
     __slots__ = ("name",)
@@ -413,9 +420,15 @@ class Len(Expr):
 class BooleanFunction(Expr):
     __slots__ = ("name", "options", "children")
     _non_child = ("dtype", "name", "options")
+    name: pl_expr.BooleanFunction
+    options: tuple
 
     def __init__(
-        self, dtype: plc.DataType, name: str, options: tuple, *children: Expr
+        self,
+        dtype: plc.DataType,
+        name: pl_expr.BooleanFunction,
+        options: tuple,
+        *children: Expr,
     ) -> None:
         super().__init__(dtype)
         self.options = options
@@ -661,6 +674,92 @@ class StringFunction(Expr):
             return Column(plc.strings.find.starts_with(column.obj, suffix.obj))
         else:
             raise NotImplementedError(f"StringFunction {self.name}")
+
+
+class TemporalFunction(Expr):
+    __slots__ = ("name", "options", "children")
+    _non_child = ("dtype", "name", "options")
+
+    def __init__(
+        self,
+        dtype: plc.DataType,
+        name: pl_expr.TemporalFunction,
+        options: tuple,
+        *children: Expr,
+    ) -> None:
+        super().__init__(dtype)
+        self.options = options
+        self.name = name
+        self.children = children
+        if self.name != pl_expr.TemporalFunction.Year:
+            raise NotImplementedError(f"String function {self.name}")
+
+    def do_evaluate(
+        self,
+        df: DataFrame,
+        *,
+        context: ExecutionContext = ExecutionContext.FRAME,
+        mapping: Mapping[Expr, Column] | None = None,
+    ) -> Column:
+        """Evaluate this expression given a dataframe for context."""
+        columns = [
+            child.evaluate(df, context=context, mapping=mapping)
+            for child in self.children
+        ]
+        if self.name == pl_expr.TemporalFunction.Year:
+            (column,) = columns
+            return Column(plc.datetime.extract_year(column.obj))
+        else:
+            raise NotImplementedError(f"TemporalFunction {self.name}")
+
+
+class UnaryFunction(Expr):
+    __slots__ = ("name", "options", "children")
+    _non_child = ("dtype", "name", "options")
+
+    def __init__(
+        self, dtype: plc.DataType, name: str, options: tuple, *children: Expr
+    ) -> None:
+        super().__init__(dtype)
+        self.name = name
+        self.options = options
+        self.children = children
+        if self.name not in ("round",):
+            raise NotImplementedError(f"Unary function {name=}")
+
+    def do_evaluate(
+        self,
+        df: DataFrame,
+        *,
+        context: ExecutionContext = ExecutionContext.FRAME,
+        mapping: Mapping[Expr, Column] | None = None,
+    ) -> Column:
+        """Evaluate this expression given a dataframe for context."""
+        if self.name == "round":
+            (decimal_places,) = self.options
+            (values,) = (
+                child.evaluate(df, context=context, mapping=mapping)
+                for child in self.children
+            )
+            return Column(
+                plc.round.round(
+                    values.obj, decimal_places, plc.round.RoundingMethod.HALF_UP
+                )
+            ).with_sorted(like=values)
+        raise NotImplementedError
+
+    def collect_agg(self, *, depth: int) -> AggInfo:
+        """Collect information about aggregations in groupbys."""
+        if depth == 1:
+            # inside aggregation, need to pre-evaluate,
+            # This recurses to check if we have nested aggs
+            # groupby construction has checked that we don't have
+            # nested aggs, so stop the recursion and return ourselves
+            # for pre-eval
+            return AggInfo([(self, plc.aggregation.collect_list(), self)])
+        else:
+            (child,) = self.children
+            return child.collect_agg(depth=depth)
 
 
 class Sort(Expr):
@@ -1028,6 +1127,31 @@ class Agg(Expr):
             raise NotImplementedError(f"Agg in context {context}")
         (child,) = self.children
         return self.op(child.evaluate(df, context=context, mapping=mapping))
+
+
+class Ternary(Expr):
+    __slots__ = ("children",)
+    _non_child = ("dtype",)
+
+    def __init__(
+        self, dtype: plc.DataType, when: Expr, then: Expr, otherwise: Expr
+    ) -> None:
+        super().__init__(dtype)
+        self.children = (when, then, otherwise)
+
+    def do_evaluate(
+        self,
+        df: DataFrame,
+        *,
+        context: ExecutionContext = ExecutionContext.FRAME,
+        mapping: Mapping[Expr, Column] | None = None,
+    ) -> Column:
+        """Evaluate this expression given a dataframe for context."""
+        when, then, otherwise = (
+            child.evaluate(df, context=context, mapping=mapping)
+            for child in self.children
+        )
+        return Column(plc.copying.copy_if_else(then.obj, otherwise.obj, when.obj))
 
 
 class BinOp(Expr):

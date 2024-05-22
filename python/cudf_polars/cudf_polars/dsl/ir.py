@@ -323,7 +323,7 @@ class GroupBy(IR):
     """Options controlling style of groupby."""
 
     @staticmethod
-    def check_agg(agg: expr.Expr | expr.NamedExpr) -> int:
+    def check_agg(agg: expr.Expr) -> int:
         """
         Determine if we can handle an aggregation expression.
 
@@ -340,7 +340,7 @@ class GroupBy(IR):
         ------
         NotImplementedError for unsupported expression nodes.
         """
-        if isinstance(agg, (expr.BinOp, expr.Cast)):
+        if isinstance(agg, (expr.BinOp, expr.Cast, expr.UnaryFunction)):
             return max(GroupBy.check_agg(child) for child in agg.children)
         elif isinstance(agg, expr.Agg):
             if agg.name == "implode":
