@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from contextlib import AbstractContextManager, nullcontext
 from functools import singledispatch
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
 
@@ -18,6 +18,9 @@ import cudf._lib.pylibcudf as plc  # noqa: TCH002, singledispatch register needs
 from cudf_polars.dsl import expr, ir
 from cudf_polars.utils import dtypes
 
+if TYPE_CHECKING:
+    from cudf_polars.typing import NodeTraverser
+
 __all__ = ["translate_ir", "translate_named_expr"]
 
 
@@ -26,7 +29,7 @@ class set_node(AbstractContextManager):
 
     __slots__ = ("n", "visitor")
 
-    def __init__(self, visitor, n: int):
+    def __init__(self, visitor: NodeTraverser, n: int):
         self.visitor = visitor
         self.n = n
 
@@ -43,12 +46,16 @@ noop_context: nullcontext = nullcontext()
 
 
 @singledispatch
-def _translate_ir(node: Any, visitor: Any, schema: dict[str, plc.DataType]) -> ir.IR:
+def _translate_ir(
+    node: Any, visitor: NodeTraverser, schema: dict[str, plc.DataType]
+) -> ir.IR:
     raise NotImplementedError(f"Translation for {type(node).__name__}")
 
 
 @_translate_ir.register
-def _(node: pl_ir.PythonScan, visitor: Any, schema: dict[str, plc.DataType]) -> ir.IR:
+def _(
+    node: pl_ir.PythonScan, visitor: NodeTraverser, schema: dict[str, plc.DataType]
+) -> ir.IR:
     return ir.PythonScan(
         schema,
         node.options,
@@ -59,7 +66,9 @@ def _(node: pl_ir.PythonScan, visitor: Any, schema: dict[str, plc.DataType]) -> 
 
 
 @_translate_ir.register
-def _(node: pl_ir.Scan, visitor: Any, schema: dict[str, plc.DataType]) -> ir.IR:
+def _(
+    node: pl_ir.Scan, visitor: NodeTraverser, schema: dict[str, plc.DataType]
+) -> ir.IR:
     return ir.Scan(
         schema,
         node.scan_type,
@@ -72,13 +81,15 @@ def _(node: pl_ir.Scan, visitor: Any, schema: dict[str, plc.DataType]) -> ir.IR:
 
 
 @_translate_ir.register
-def _(node: pl_ir.Cache, visitor: Any, schema: dict[str, plc.DataType]) -> ir.IR:
+def _(
+    node: pl_ir.Cache, visitor: NodeTraverser, schema: dict[str, plc.DataType]
+) -> ir.IR:
     return ir.Cache(schema, node.id_, translate_ir(visitor, n=node.input))
 
 
 @_translate_ir.register
 def _(
-    node: pl_ir.DataFrameScan, visitor: Any, schema: dict[str, plc.DataType]
+    node: pl_ir.DataFrameScan, visitor: NodeTraverser, schema: dict[str, plc.DataType]
 ) -> ir.IR:
     return ir.DataFrameScan(
         schema,
@@ -91,7 +102,9 @@ def _(
 
 
 @_translate_ir.register
-def _(node: pl_ir.Select, visitor: Any, schema: dict[str, plc.DataType]) -> ir.IR:
+def _(
+    node: pl_ir.Select, visitor: NodeTraverser, schema: dict[str, plc.DataType]
+) -> ir.IR:
     with set_node(visitor, node.input):
         inp = translate_ir(visitor, n=None)
     cse_exprs = [translate_named_expr(visitor, n=e) for e in node.cse_expr]
@@ -100,7 +113,9 @@ def _(node: pl_ir.Select, visitor: Any, schema: dict[str, plc.DataType]) -> ir.I
 
 
 @_translate_ir.register
-def _(node: pl_ir.GroupBy, visitor: Any, schema: dict[str, plc.DataType]) -> ir.IR:
+def _(
+    node: pl_ir.GroupBy, visitor: NodeTraverser, schema: dict[str, plc.DataType]
+) -> ir.IR:
     with set_node(visitor, node.input):
         inp = translate_ir(visitor, n=None)
     aggs = [translate_named_expr(visitor, n=e) for e in node.aggs]
@@ -116,7 +131,9 @@ def _(node: pl_ir.GroupBy, visitor: Any, schema: dict[str, plc.DataType]) -> ir.
 
 
 @_translate_ir.register
-def _(node: pl_ir.Join, visitor: Any, schema: dict[str, plc.DataType]) -> ir.IR:
+def _(
+    node: pl_ir.Join, visitor: NodeTraverser, schema: dict[str, plc.DataType]
+) -> ir.IR:
     # Join key dtypes are dependent on the schema of the left and
     # right inputs, so these must be translated with the relevant
     # input active.
@@ -130,7 +147,9 @@ def _(node: pl_ir.Join, visitor: Any, schema: dict[str, plc.DataType]) -> ir.IR:
 
 
 @_translate_ir.register
-def _(node: pl_ir.HStack, visitor: Any, schema: dict[str, plc.DataType]) -> ir.IR:
+def _(
+    node: pl_ir.HStack, visitor: NodeTraverser, schema: dict[str, plc.DataType]
+) -> ir.IR:
     with set_node(visitor, node.input):
         inp = translate_ir(visitor, n=None)
     cse_exprs = [translate_named_expr(visitor, n=e) for e in node.cse_exprs]
@@ -139,7 +158,9 @@ def _(node: pl_ir.HStack, visitor: Any, schema: dict[str, plc.DataType]) -> ir.I
 
 
 @_translate_ir.register
-def _(node: pl_ir.Reduce, visitor: Any, schema: dict[str, plc.DataType]) -> ir.IR:
+def _(
+    node: pl_ir.Reduce, visitor: NodeTraverser, schema: dict[str, plc.DataType]
+) -> ir.IR:
     with set_node(visitor, node.input):
         inp = translate_ir(visitor, n=None)
     exprs = [translate_named_expr(visitor, n=e) for e in node.expr]
@@ -147,7 +168,9 @@ def _(node: pl_ir.Reduce, visitor: Any, schema: dict[str, plc.DataType]) -> ir.I
 
 
 @_translate_ir.register
-def _(node: pl_ir.Distinct, visitor: Any, schema: dict[str, plc.DataType]) -> ir.IR:
+def _(
+    node: pl_ir.Distinct, visitor: NodeTraverser, schema: dict[str, plc.DataType]
+) -> ir.IR:
     return ir.Distinct(
         schema,
         translate_ir(visitor, n=node.input),
@@ -156,7 +179,9 @@ def _(node: pl_ir.Distinct, visitor: Any, schema: dict[str, plc.DataType]) -> ir
 
 
 @_translate_ir.register
-def _(node: pl_ir.Sort, visitor: Any, schema: dict[str, plc.DataType]) -> ir.IR:
+def _(
+    node: pl_ir.Sort, visitor: NodeTraverser, schema: dict[str, plc.DataType]
+) -> ir.IR:
     with set_node(visitor, node.input):
         inp = translate_ir(visitor, n=None)
     by = [translate_named_expr(visitor, n=e) for e in node.by_column]
@@ -164,12 +189,16 @@ def _(node: pl_ir.Sort, visitor: Any, schema: dict[str, plc.DataType]) -> ir.IR:
 
 
 @_translate_ir.register
-def _(node: pl_ir.Slice, visitor: Any, schema: dict[str, plc.DataType]) -> ir.IR:
+def _(
+    node: pl_ir.Slice, visitor: NodeTraverser, schema: dict[str, plc.DataType]
+) -> ir.IR:
     return ir.Slice(schema, translate_ir(visitor, n=node.input), node.offset, node.len)
 
 
 @_translate_ir.register
-def _(node: pl_ir.Filter, visitor: Any, schema: dict[str, plc.DataType]) -> ir.IR:
+def _(
+    node: pl_ir.Filter, visitor: NodeTraverser, schema: dict[str, plc.DataType]
+) -> ir.IR:
     with set_node(visitor, node.input):
         inp = translate_ir(visitor, n=None)
     mask = translate_named_expr(visitor, n=node.predicate)
@@ -178,13 +207,17 @@ def _(node: pl_ir.Filter, visitor: Any, schema: dict[str, plc.DataType]) -> ir.I
 
 @_translate_ir.register
 def _(
-    node: pl_ir.SimpleProjection, visitor: Any, schema: dict[str, plc.DataType]
+    node: pl_ir.SimpleProjection,
+    visitor: NodeTraverser,
+    schema: dict[str, plc.DataType],
 ) -> ir.IR:
     return ir.Projection(schema, translate_ir(visitor, n=node.input))
 
 
 @_translate_ir.register
-def _(node: pl_ir.MapFunction, visitor: Any, schema: dict[str, plc.DataType]) -> ir.IR:
+def _(
+    node: pl_ir.MapFunction, visitor: NodeTraverser, schema: dict[str, plc.DataType]
+) -> ir.IR:
     name, *options = node.function
     return ir.MapFunction(
         schema,
@@ -196,19 +229,25 @@ def _(node: pl_ir.MapFunction, visitor: Any, schema: dict[str, plc.DataType]) ->
 
 
 @_translate_ir.register
-def _(node: pl_ir.Union, visitor: Any, schema: dict[str, plc.DataType]) -> ir.IR:
+def _(
+    node: pl_ir.Union, visitor: NodeTraverser, schema: dict[str, plc.DataType]
+) -> ir.IR:
     return ir.Union(
         schema, [translate_ir(visitor, n=n) for n in node.inputs], node.options
     )
 
 
 @_translate_ir.register
-def _(node: pl_ir.HConcat, visitor: Any, schema: dict[str, plc.DataType]) -> ir.IR:
+def _(
+    node: pl_ir.HConcat, visitor: NodeTraverser, schema: dict[str, plc.DataType]
+) -> ir.IR:
     return ir.HConcat(schema, [translate_ir(visitor, n=n) for n in node.inputs])
 
 
 @_translate_ir.register
-def _(node: pl_ir.ExtContext, visitor: Any, schema: dict[str, plc.DataType]) -> ir.IR:
+def _(
+    node: pl_ir.ExtContext, visitor: NodeTraverser, schema: dict[str, plc.DataType]
+) -> ir.IR:
     return ir.ExtContext(
         schema,
         translate_ir(visitor, n=node.input),
@@ -216,7 +255,7 @@ def _(node: pl_ir.ExtContext, visitor: Any, schema: dict[str, plc.DataType]) -> 
     )
 
 
-def translate_ir(visitor: Any, *, n: int | None = None) -> ir.IR:
+def translate_ir(visitor: NodeTraverser, *, n: int | None = None) -> ir.IR:
     """
     Translate a polars-internal IR node to our representation.
 
@@ -246,7 +285,9 @@ def translate_ir(visitor: Any, *, n: int | None = None) -> ir.IR:
         return _translate_ir(node, visitor, schema)
 
 
-def translate_named_expr(visitor: Any, *, n: pl_expr.PyExprIR) -> expr.NamedExpr:
+def translate_named_expr(
+    visitor: NodeTraverser, *, n: pl_expr.PyExprIR
+) -> expr.NamedExpr:
     """
     Translate a polars-internal named expression IR object into our representation.
 
@@ -269,12 +310,14 @@ def translate_named_expr(visitor: Any, *, n: pl_expr.PyExprIR) -> expr.NamedExpr
 
 
 @singledispatch
-def _translate_expr(node: Any, visitor: Any, dtype: plc.DataType) -> expr.Expr:
+def _translate_expr(
+    node: Any, visitor: NodeTraverser, dtype: plc.DataType
+) -> expr.Expr:
     raise NotImplementedError(f"Translation for {type(node).__name__}")
 
 
 @_translate_expr.register
-def _(node: pl_expr.Function, visitor: Any, dtype: plc.DataType) -> expr.Expr:
+def _(node: pl_expr.Function, visitor: NodeTraverser, dtype: plc.DataType) -> expr.Expr:
     name, *options = node.function_data
     options = tuple(options)
     if isinstance(name, pl_expr.StringFunction):
@@ -296,7 +339,7 @@ def _(node: pl_expr.Function, visitor: Any, dtype: plc.DataType) -> expr.Expr:
 
 
 @_translate_expr.register
-def _(node: pl_expr.Window, visitor: Any, dtype: plc.DataType) -> expr.Expr:
+def _(node: pl_expr.Window, visitor: NodeTraverser, dtype: plc.DataType) -> expr.Expr:
     # TODO: raise in groupby?
     if node.partition_by is None:
         return expr.RollingWindow(
@@ -312,19 +355,19 @@ def _(node: pl_expr.Window, visitor: Any, dtype: plc.DataType) -> expr.Expr:
 
 
 @_translate_expr.register
-def _(node: pl_expr.Literal, visitor: Any, dtype: plc.DataType) -> expr.Expr:
+def _(node: pl_expr.Literal, visitor: NodeTraverser, dtype: plc.DataType) -> expr.Expr:
     value = pa.scalar(node.value, type=dtypes.to_arrow(dtype))
     return expr.Literal(dtype, value)
 
 
 @_translate_expr.register
-def _(node: pl_expr.Sort, visitor: Any, dtype: plc.DataType) -> expr.Expr:
+def _(node: pl_expr.Sort, visitor: NodeTraverser, dtype: plc.DataType) -> expr.Expr:
     # TODO: raise in groupby
     return expr.Sort(dtype, node.options, translate_expr(visitor, n=node.expr))
 
 
 @_translate_expr.register
-def _(node: pl_expr.SortBy, visitor: Any, dtype: plc.DataType) -> expr.Expr:
+def _(node: pl_expr.SortBy, visitor: NodeTraverser, dtype: plc.DataType) -> expr.Expr:
     return expr.SortBy(
         dtype,
         node.sort_options,
@@ -334,7 +377,7 @@ def _(node: pl_expr.SortBy, visitor: Any, dtype: plc.DataType) -> expr.Expr:
 
 
 @_translate_expr.register
-def _(node: pl_expr.Gather, visitor: Any, dtype: plc.DataType) -> expr.Expr:
+def _(node: pl_expr.Gather, visitor: NodeTraverser, dtype: plc.DataType) -> expr.Expr:
     return expr.Gather(
         dtype,
         translate_expr(visitor, n=node.expr),
@@ -343,7 +386,7 @@ def _(node: pl_expr.Gather, visitor: Any, dtype: plc.DataType) -> expr.Expr:
 
 
 @_translate_expr.register
-def _(node: pl_expr.Filter, visitor: Any, dtype: plc.DataType) -> expr.Expr:
+def _(node: pl_expr.Filter, visitor: NodeTraverser, dtype: plc.DataType) -> expr.Expr:
     return expr.Filter(
         dtype,
         translate_expr(visitor, n=node.input),
@@ -352,7 +395,7 @@ def _(node: pl_expr.Filter, visitor: Any, dtype: plc.DataType) -> expr.Expr:
 
 
 @_translate_expr.register
-def _(node: pl_expr.Cast, visitor: Any, dtype: plc.DataType) -> expr.Expr:
+def _(node: pl_expr.Cast, visitor: NodeTraverser, dtype: plc.DataType) -> expr.Expr:
     inner = translate_expr(visitor, n=node.expr)
     # Push casts into literals so we can handle Cast(Literal(Null))
     if isinstance(inner, expr.Literal):
@@ -362,12 +405,12 @@ def _(node: pl_expr.Cast, visitor: Any, dtype: plc.DataType) -> expr.Expr:
 
 
 @_translate_expr.register
-def _(node: pl_expr.Column, visitor: Any, dtype: plc.DataType) -> expr.Expr:
+def _(node: pl_expr.Column, visitor: NodeTraverser, dtype: plc.DataType) -> expr.Expr:
     return expr.Col(dtype, node.name)
 
 
 @_translate_expr.register
-def _(node: pl_expr.Agg, visitor: Any, dtype: plc.DataType) -> expr.Expr:
+def _(node: pl_expr.Agg, visitor: NodeTraverser, dtype: plc.DataType) -> expr.Expr:
     return expr.Agg(
         dtype,
         node.name,
@@ -377,7 +420,9 @@ def _(node: pl_expr.Agg, visitor: Any, dtype: plc.DataType) -> expr.Expr:
 
 
 @_translate_expr.register
-def _(node: pl_expr.BinaryExpr, visitor: Any, dtype: plc.DataType) -> expr.Expr:
+def _(
+    node: pl_expr.BinaryExpr, visitor: NodeTraverser, dtype: plc.DataType
+) -> expr.Expr:
     return expr.BinOp(
         dtype,
         expr.BinOp._MAPPING[node.op],
@@ -387,11 +432,11 @@ def _(node: pl_expr.BinaryExpr, visitor: Any, dtype: plc.DataType) -> expr.Expr:
 
 
 @_translate_expr.register
-def _(node: pl_expr.Len, visitor: Any, dtype: plc.DataType) -> expr.Expr:
+def _(node: pl_expr.Len, visitor: NodeTraverser, dtype: plc.DataType) -> expr.Expr:
     return expr.Len(dtype)
 
 
-def translate_expr(visitor: Any, *, n: int) -> expr.Expr:
+def translate_expr(visitor: NodeTraverser, *, n: int) -> expr.Expr:
     """
     Translate a polars-internal expression IR into our representation.
 
