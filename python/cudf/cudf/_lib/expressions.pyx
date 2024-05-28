@@ -13,7 +13,10 @@ from libcpp.utility cimport move
 from cudf._lib.pylibcudf.libcudf cimport expressions as libcudf_exp
 from cudf._lib.pylibcudf.libcudf.types cimport size_type
 from cudf._lib.pylibcudf.libcudf.wrappers.timestamps cimport (
+    timestamp_D,
     timestamp_ms,
+    timestamp_ns,
+    timestamp_s,
     timestamp_us,
 )
 
@@ -104,7 +107,22 @@ cdef class Literal(Expression):
         elif isinstance(value, np.datetime64):
             scale, _ = np.datetime_data(value.dtype)
             int_value = value.astype(np.int64)
-            if scale == "ms":
+            if scale == "D":
+                int32_value = value.astype(np.int32)
+                self.c_scalar.reset(new timestamp_scalar[timestamp_D](
+                    <int32_t>int32_value, True)
+                )
+                self.c_obj = <expression_ptr> move(make_unique[libcudf_exp.literal](
+                    <timestamp_scalar[timestamp_D] &>dereference(self.c_scalar)
+                ))
+            elif scale == "s":
+                self.c_scalar.reset(new timestamp_scalar[timestamp_s](
+                    <int64_t>int_value, True)
+                )
+                self.c_obj = <expression_ptr> move(make_unique[libcudf_exp.literal](
+                    <timestamp_scalar[timestamp_s] &>dereference(self.c_scalar)
+                ))
+            elif scale == "ms":
                 self.c_scalar.reset(new timestamp_scalar[timestamp_ms](
                     <int64_t>int_value, True)
                 )
@@ -117,6 +135,13 @@ cdef class Literal(Expression):
                 )
                 self.c_obj = <expression_ptr> move(make_unique[libcudf_exp.literal](
                     <timestamp_scalar[timestamp_us] &>dereference(self.c_scalar)
+                ))
+            elif scale == "ns":
+                self.c_scalar.reset(new timestamp_scalar[timestamp_ns](
+                    <int64_t>int_value, True)
+                )
+                self.c_obj = <expression_ptr> move(make_unique[libcudf_exp.literal](
+                    <timestamp_scalar[timestamp_ns] &>dereference(self.c_scalar)
                 ))
             else:
                 raise NotImplementedError(
