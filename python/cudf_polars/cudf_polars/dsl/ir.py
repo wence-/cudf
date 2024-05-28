@@ -31,6 +31,7 @@ import cudf._lib.pylibcudf as plc
 
 import cudf_polars.dsl.expr as expr
 from cudf_polars.containers import DataFrame, NamedColumn
+from cudf_polars.io import parquet
 from cudf_polars.utils import dtypes, sorting
 
 if TYPE_CHECKING:
@@ -140,9 +141,20 @@ class Scan(IR):
                 )
             )
         elif self.typ == "parquet":
-            cdf = cudf.read_parquet(self.paths, columns=with_columns)
-            assert isinstance(cdf, cudf.DataFrame)
-            df = DataFrame.from_cudf(cdf)
+            # Row index and mask pushdown into parquet read doesn't
+            # work, so just defer to post-filtering
+            if self.predicate is not None and row_index is None:
+                try:
+                    mask, keepalive = parquet.as_libcudf_expr(self.predicate.value)
+                    return DataFrame.from_cudf(
+                        parquet.read_parquet(self.paths, with_columns, mask)
+                    )
+                except (NotImplementedError, RuntimeError):
+                    # Unable to read with predicate pushdown, so just apply post-filtering
+                    pass
+            df = DataFrame.from_cudf(
+                parquet.read_parquet(self.paths, with_columns, None)
+            )
         else:
             assert_never(self.typ)
         if row_index is not None:
@@ -170,8 +182,7 @@ class Scan(IR):
         if self.predicate is None:
             return df
         else:
-            mask = self.predicate.evaluate(df)
-            return df.filter(mask)
+            return df.filter(self.predicate.evaluate(df))
 
 
 @dataclass(slots=True)
