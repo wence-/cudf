@@ -16,6 +16,7 @@ In particular, the interpretation of the expression language in a
 from __future__ import annotations
 
 import enum
+import itertools
 from enum import IntEnum
 from functools import partial, reduce
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
@@ -93,6 +94,24 @@ class Expr:
     """Children of the expression."""
     _non_child: ClassVar[tuple[str, ...]] = ("dtype",)
     """Names of non-child data (not Exprs) for reconstruction."""
+
+    class Type(IntEnum):
+        """Classification type of expression."""
+
+        POINTWISE = enum.auto()
+        """Expression acts pointwise."""
+        REDUCTION = enum.auto()
+        """Expression acts like a reduction."""
+        SCAN = enum.auto()
+        """Expression acts like a scan."""
+        SAMPLE = enum.auto()
+        """Expression acts like a sample."""
+        ROLLING = enum.auto()
+        """Expression acts like a rolling window."""
+        UNKNOWN = enum.auto()
+        """Expression has unknown type."""
+
+    _type: Type = Type.UNKNOWN
 
     # Constructor must take arguments in order (*_non_child, *children)
     def __init__(self, dtype: plc.DataType) -> None:
@@ -276,9 +295,39 @@ class Expr:
         aggregation request (for example nested aggregations like
         ``a.max().min()``).
         """
-        raise NotImplementedError(
-            f"Collecting aggregation info for {type(self).__name__}"
-        )
+        if self._type is Expr.Type.POINTWISE:
+            if depth == 1:
+                # inside aggregation, need to pre-evaluate,
+                # groupby construction has checked that we don't have
+                # nested aggs, so stop the recursion and return ourselves
+                # for pre-eval
+                return AggInfo([(self, plc.aggregation.collect_list(), self)])
+            else:
+                requests = list(
+                    itertools.chain.from_iterable(
+                        child.collect_agg(depth=depth).requests
+                        for child in self.children
+                    )
+                )
+                # TODO: Hack, if there were no reductions inside this
+                # pointwise expression then we want to pre-evaluate
+                # and collect ourselves. Otherwise we want to collect
+                # the aggregations inside and post-evaluate. This is a
+                # bad way of checking that we are in case 1.
+                if all(
+                    agg.kind() == plc.aggregation.Kind.COLLECT_LIST
+                    for _, agg, _ in requests
+                ):
+                    return AggInfo([(self, plc.aggregation.collect_list(), self)])
+                return AggInfo(requests)
+        elif self._type is Expr.Type.REDUCTION:
+            raise NotImplementedError(
+                "Subclass must implement collect_agg for reduction"
+            )
+        else:
+            raise NotImplementedError(
+                f"Expression with classification {self._type} in group_by"
+            )
 
 
 class NamedExpr:
@@ -347,7 +396,8 @@ class Literal(Expr):
     __slots__ = ("value",)
     _non_child = ("dtype", "value")
     value: pa.Scalar
-    children: tuple[()]
+    children: tuple[()] = ()
+    _type = Expr.Type.POINTWISE
 
     def __init__(self, dtype: plc.DataType, value: pa.Scalar) -> None:
         super().__init__(dtype)
@@ -374,7 +424,8 @@ class Col(Expr):
     __slots__ = ("name",)
     _non_child = ("dtype", "name")
     name: str
-    children: tuple[()]
+    children: tuple[()] = ()
+    _type: Expr.Type = Expr.Type.POINTWISE
 
     def __init__(self, dtype: plc.DataType, name: str) -> None:
         self.dtype = dtype
@@ -390,13 +441,10 @@ class Col(Expr):
         """Evaluate this expression given a dataframe for context."""
         return df._column_map[self.name]
 
-    def collect_agg(self, *, depth: int) -> AggInfo:
-        """Collect information about aggregations in groupbys."""
-        return AggInfo([(self, plc.aggregation.collect_list(), self)])
-
 
 class Len(Expr):
-    children: tuple[()]
+    children: tuple[()] = ()
+    _type: Expr.Type = Expr.Type.REDUCTION
 
     def do_evaluate(
         self,
@@ -418,7 +466,7 @@ class Len(Expr):
 
 
 class BooleanFunction(Expr):
-    __slots__ = ("name", "options", "children")
+    __slots__ = ("name", "options", "children", "_type")
     _non_child = ("dtype", "name", "options")
     name: pl_expr.BooleanFunction
     options: tuple
@@ -446,6 +494,17 @@ class BooleanFunction(Expr):
             pl_expr.BooleanFunction.IsIn,
         ):
             raise NotImplementedError(f"{self.name}")
+        if self.name in (pl_expr.BooleanFunction.Any, pl_expr.BooleanFunction.All):
+            self._type = Expr.Type.REDUCTION
+        elif self.name in (
+            pl_expr.BooleanFunction.IsFirstDistinct,
+            pl_expr.BooleanFunction.IsLastDistinct,
+            pl_expr.BooleanFunction.IsDuplicated,
+            pl_expr.BooleanFunction.IsUnique,
+        ):
+            self._type = Expr.Type.SAMPLE
+        else:
+            self._type = Expr.Type.POINTWISE
 
     @staticmethod
     def _distinct(
@@ -626,7 +685,7 @@ class BooleanFunction(Expr):
 
 
 class StringFunction(Expr):
-    __slots__ = ("name", "options", "children")
+    __slots__ = ("name", "options", "children", "_type")
     _non_child = ("dtype", "name", "options")
 
     def __init__(
@@ -647,6 +706,8 @@ class StringFunction(Expr):
             pl_expr.StringFunction.StartsWith,
         ):
             raise NotImplementedError(f"String function {self.name}")
+        # TODO: For now
+        self._type = Expr.Type.POINTWISE
 
     def do_evaluate(
         self,
@@ -677,7 +738,7 @@ class StringFunction(Expr):
 
 
 class TemporalFunction(Expr):
-    __slots__ = ("name", "options", "children")
+    __slots__ = ("name", "options", "children", "_type")
     _non_child = ("dtype", "name", "options")
 
     def __init__(
@@ -693,6 +754,8 @@ class TemporalFunction(Expr):
         self.children = children
         if self.name != pl_expr.TemporalFunction.Year:
             raise NotImplementedError(f"String function {self.name}")
+        # TODO: for now
+        self._type = Expr.Type.POINTWISE
 
     def do_evaluate(
         self,
@@ -714,7 +777,7 @@ class TemporalFunction(Expr):
 
 
 class UnaryFunction(Expr):
-    __slots__ = ("name", "options", "children")
+    __slots__ = ("name", "options", "children", "_type")
     _non_child = ("dtype", "name", "options")
 
     def __init__(
@@ -726,6 +789,8 @@ class UnaryFunction(Expr):
         self.children = children
         if self.name not in ("round",):
             raise NotImplementedError(f"Unary function {name=}")
+        # TODO: for now
+        self._type = Expr.Type.POINTWISE
 
     def do_evaluate(
         self,
@@ -748,24 +813,12 @@ class UnaryFunction(Expr):
             ).with_sorted(like=values)
         raise NotImplementedError
 
-    def collect_agg(self, *, depth: int) -> AggInfo:
-        """Collect information about aggregations in groupbys."""
-        if depth == 1:
-            # inside aggregation, need to pre-evaluate,
-            # This recurses to check if we have nested aggs
-            # groupby construction has checked that we don't have
-            # nested aggs, so stop the recursion and return ourselves
-            # for pre-eval
-            return AggInfo([(self, plc.aggregation.collect_list(), self)])
-        else:
-            (child,) = self.children
-            return child.collect_agg(depth=depth)
-
 
 class Sort(Expr):
     __slots__ = ("options", "children")
     _non_child = ("dtype", "options")
     children: tuple[Expr]
+    _type: Expr.Type = Expr.Type.SAMPLE
 
     def __init__(
         self, dtype: plc.DataType, options: tuple[bool, bool, bool], column: Expr
@@ -801,6 +854,7 @@ class Sort(Expr):
 class SortBy(Expr):
     __slots__ = ("options", "children")
     _non_child = ("dtype", "options")
+    _type: Expr.Type = Expr.Type.SAMPLE
 
     def __init__(
         self,
@@ -840,6 +894,7 @@ class Gather(Expr):
     __slots__ = ("children",)
     _non_child = ("dtype",)
     children: tuple[Expr, Expr]
+    _type: Expr.Type = Expr.Type.SAMPLE
 
     def __init__(self, dtype: plc.DataType, values: Expr, indices: Expr) -> None:
         super().__init__(dtype)
@@ -882,6 +937,7 @@ class Filter(Expr):
     __slots__ = ("children",)
     _non_child = ("dtype",)
     children: tuple[Expr, Expr]
+    _type: Expr.Type = Expr.Type.SAMPLE
 
     def __init__(self, dtype: plc.DataType, values: Expr, indices: Expr):
         super().__init__(dtype)
@@ -909,6 +965,7 @@ class RollingWindow(Expr):
     __slots__ = ("options", "children")
     _non_child = ("dtype", "options")
     children: tuple[Expr]
+    _type: Expr.Type = Expr.Type.ROLLING
 
     def __init__(self, dtype: plc.DataType, options: Any, agg: Expr) -> None:
         super().__init__(dtype)
@@ -919,6 +976,7 @@ class RollingWindow(Expr):
 class GroupedRollingWindow(Expr):
     __slots__ = ("options", "children")
     _non_child = ("dtype", "options")
+    _type: Expr.Type = Expr.Type.ROLLING
 
     def __init__(self, dtype: plc.DataType, options: Any, agg: Expr, *by: Expr) -> None:
         super().__init__(dtype)
@@ -930,6 +988,7 @@ class Cast(Expr):
     __slots__ = ("children",)
     _non_child = ("dtype",)
     children: tuple[Expr]
+    _type: Expr.Type = Expr.Type.POINTWISE
 
     def __init__(self, dtype: plc.DataType, value: Expr) -> None:
         super().__init__(dtype)
@@ -947,17 +1006,13 @@ class Cast(Expr):
         column = child.evaluate(df, context=context, mapping=mapping)
         return Column(plc.unary.cast(column.obj, self.dtype)).sorted_like(column)
 
-    def collect_agg(self, *, depth: int) -> AggInfo:
-        """Collect information about aggregations in groupbys."""
-        # TODO: Could do with sort-based groupby and segmented filter
-        (child,) = self.children
-        return child.collect_agg(depth=depth)
-
 
 class Agg(Expr):
     __slots__ = ("name", "options", "op", "request", "children")
     _non_child = ("dtype", "name", "options")
     children: tuple[Expr]
+    # TODO: Might have scans too eventually?
+    _type: Expr.Type = Expr.Type.REDUCTION
 
     def __init__(
         self, dtype: plc.DataType, name: str, options: Any, value: Expr
@@ -1028,11 +1083,11 @@ class Agg(Expr):
     def collect_agg(self, *, depth: int) -> AggInfo:
         """Collect information about aggregations in groupbys."""
         if depth >= 1:
-            raise NotImplementedError("Nested aggregations in groupby")
+            raise NotImplementedError("Nested aggregations in group_by")
         (child,) = self.children
         ((expr, _, _),) = child.collect_agg(depth=depth + 1).requests
         if self.request is None:
-            raise NotImplementedError(f"Aggregation {self.name} in groupby")
+            raise NotImplementedError(f"Aggregation {self.name} in group_by")
         return AggInfo([(expr, self.request, self)])
 
     def _reduce(
@@ -1132,6 +1187,7 @@ class Agg(Expr):
 class Ternary(Expr):
     __slots__ = ("children",)
     _non_child = ("dtype",)
+    _type: Expr.Type = Expr.Type.POINTWISE
 
     def __init__(
         self, dtype: plc.DataType, when: Expr, then: Expr, otherwise: Expr
@@ -1158,6 +1214,7 @@ class BinOp(Expr):
     __slots__ = ("op", "children")
     _non_child = ("dtype", "op")
     children: tuple[Expr, Expr]
+    _type: Expr.Type = Expr.Type.POINTWISE
 
     def __init__(
         self,
@@ -1208,30 +1265,3 @@ class BinOp(Expr):
         return Column(
             plc.binaryop.binary_operation(left.obj, right.obj, self.op, self.dtype),
         )
-
-    def collect_agg(self, *, depth: int) -> AggInfo:
-        """Collect information about aggregations in groupbys."""
-        if depth == 1:
-            # inside aggregation, need to pre-evaluate,
-            # groupby construction has checked that we don't have
-            # nested aggs, so stop the recursion and return ourselves
-            # for pre-eval
-            return AggInfo([(self, plc.aggregation.collect_list(), self)])
-        else:
-            left_info, right_info = (
-                child.collect_agg(depth=depth) for child in self.children
-            )
-            requests = [*left_info.requests, *right_info.requests]
-            # TODO: Hack, if there were no reductions inside this
-            # binary expression then we want to pre-evaluate and
-            # collect ourselves. Otherwise we want to collect the
-            # aggregations inside and post-evaluate. This is a bad way
-            # of checking that we are in case 1.
-            if all(
-                agg.kind() == plc.aggregation.Kind.COLLECT_LIST
-                for _, agg, _ in requests
-            ):
-                return AggInfo([(self, plc.aggregation.collect_list(), self)])
-            return AggInfo(
-                [*left_info.requests, *right_info.requests],
-            )
