@@ -317,6 +317,16 @@ def _translate_expr(
 
 
 @_translate_expr.register
+def _(node: pl_expr.Ternary, visitor: NodeTraverser, dtype: plc.DataType) -> expr.Expr:
+    return expr.Ternary(
+        dtype,
+        translate_expr(visitor, n=node.predicate),
+        translate_expr(visitor, n=node.truthy),
+        translate_expr(visitor, n=node.falsy),
+    )
+
+
+@_translate_expr.register
 def _(node: pl_expr.Function, visitor: NodeTraverser, dtype: plc.DataType) -> expr.Expr:
     name, *options = node.function_data
     options = tuple(options)
@@ -336,6 +346,13 @@ def _(node: pl_expr.Function, visitor: NodeTraverser, dtype: plc.DataType) -> ex
         )
     elif isinstance(name, pl_expr.TemporalFunction):
         return expr.TemporalFunction(
+            dtype,
+            name,
+            options,
+            *(translate_expr(visitor, n=n) for n in node.input),
+        )
+    elif isinstance(name, str):
+        return expr.UnaryFunction(
             dtype,
             name,
             options,
