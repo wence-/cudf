@@ -32,6 +32,7 @@ from cudf_polars.utils import sorting
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
+    import polars.polars as plrs
     import polars.type_aliases as pl_types
 
     from cudf_polars.containers import DataFrame
@@ -366,6 +367,28 @@ class Literal(Expr):
         """Evaluate this expression given a dataframe for context."""
         # datatype of pyarrow scalar is correct by construction.
         return Column(plc.Column.from_scalar(plc.interop.from_arrow(self.value), 1))
+
+
+class LiteralColumn(Expr):
+    __slots__ = ("value",)
+    _non_child = ("dtype", "value")
+    value: pa.Array[Any, Any]
+    children: tuple[()]
+
+    def __init__(self, dtype: plc.DataType, value: plrs.PySeries) -> None:
+        super().__init__(dtype)
+        self.value = value.to_arrow()
+
+    def do_evaluate(
+        self,
+        df: DataFrame,
+        *,
+        context: ExecutionContext = ExecutionContext.FRAME,
+        mapping: Mapping[Expr, Column] | None = None,
+    ) -> Column:
+        """Evaluate this expression given a dataframe for context."""
+        # datatype of pyarrow scalar is correct by construction.
+        return Column(plc.interop.from_arrow(self.value))
 
 
 class Col(Expr):
