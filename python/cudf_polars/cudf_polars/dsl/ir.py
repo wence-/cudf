@@ -293,10 +293,7 @@ class DataFrameScan(IR):
         schema = table.schema
         for i, field in enumerate(schema):
             # TODO: Nested types
-            if field.type == pa.large_string():
-                # TODO: goes away when libcudf supports large strings
-                schema = schema.set(i, pa.field(field.name, pa.string()))
-            elif isinstance(field.type, pa.LargeListType):
+            if isinstance(field.type, pa.LargeListType):
                 # TODO: goes away when libcudf supports large lists
                 schema = schema.set(
                     i, pa.field(field.name, pa.list_(field.type.field(0)))
