@@ -21,6 +21,28 @@ def test_merge_sorted_raises():
         _ = translate_ir(q._ldf.visit())
 
 
+@pytest.mark.parametrize("mapping", [{"a": "d", "b": "d"}, {"a": "b", "b": "c"}])
+def test_rename_duplicate_raises(mapping):
+    df = pl.LazyFrame({"a": [1, 2, 3], "b": [3, 4, 5], "c": [6, 7, 8]})
+
+    q = df.rename(mapping)
+
+    with pytest.raises(NotImplementedError):
+        _ = translate_ir(q._ldf.visit())
+
+
+@pytest.mark.parametrize(
+    "mapping",
+    [{"a": "d", "b": "e"}, {"a": "b", "b": "c", "c": "a"}, lambda n: n.upper()],
+)
+def test_rename(mapping):
+    df = pl.LazyFrame({"a": [1, 2, 3], "b": [3, 4, 5], "c": [6, 7, 8]})
+
+    q = df.rename(mapping)
+
+    assert_gpu_result_equal(q)
+
+
 def test_explode_multiple_raises():
     df = pl.LazyFrame({"a": [[1, 2], [3, 4]], "b": [[5, 6], [7, 8]]})
     q = df.explode("a", "b")
