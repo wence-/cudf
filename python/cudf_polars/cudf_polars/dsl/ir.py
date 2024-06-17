@@ -361,14 +361,22 @@ class GroupBy(IR):
         NotImplementedError
             For unsupported expression nodes.
         """
-        if isinstance(agg, (expr.BinOp, expr.Cast, expr.UnaryFunction)):
-            return max(GroupBy.check_agg(child) for child in agg.children)
-        elif isinstance(agg, expr.Agg):
-            return 1 + max(GroupBy.check_agg(child) for child in agg.children)
-        elif isinstance(agg, (expr.Len, expr.Col, expr.Literal)):
-            return 0
-        else:
-            raise NotImplementedError(f"No handler for {agg=}")
+        depth = max((GroupBy.check_agg(child) for child in agg.children), default=0)
+        if agg._type is expr.Expr.Type.POINTWISE:
+            return depth
+        elif agg._type is expr.Expr.Type.REDUCTION:
+            return 1 + depth
+        elif (
+            # mypy doesn't support exhaustiveness checking of enum in
+            # (tuple, of, variants)
+            agg._type is expr.Expr.Type.ROLLING
+            or agg._type is expr.Expr.Type.SAMPLE
+            or agg._type is expr.Expr.Type.SCAN
+        ):
+            raise NotImplementedError(f"No handler for {agg=} of type {agg._type}")
+        elif agg._type is expr.Expr.Type.UNKNOWN:  # pragma: no cover
+            raise NotImplementedError(f"Aggregation {agg=} has unknown type!")
+        assert_never(agg._type)
 
     def __post_init__(self) -> None:
         """Check whether all the aggregations are implemented."""

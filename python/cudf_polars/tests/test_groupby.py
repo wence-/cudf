@@ -45,8 +45,10 @@ def keys(request):
         [pl.col("float").max() - pl.col("int").min()],
         [pl.col("float").mean(), pl.col("int").std()],
         [(pl.col("float") - pl.lit(2)).max()],
+        [pl.col("float").mean() * pl.lit(2)],
         [pl.col("float").sum().round(decimals=1)],
         [pl.col("float").round(decimals=1).sum()],
+        [pl.col("float").is_not_null()],
     ],
     ids=lambda aggs: "-".join(map(str, aggs)),
 )
@@ -92,8 +94,10 @@ def test_groupby_len(df, keys):
 @pytest.mark.parametrize(
     "expr",
     [
-        pl.col("float").is_not_null(),
+        # Nested aggregations not supported.
         (pl.col("int").max() + pl.col("float").min()).max(),
+        pl.col("int").sort(),
+        pl.col("float").over("int"),
     ],
 )
 def test_groupby_unsupported(df, expr):
