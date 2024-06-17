@@ -8,7 +8,7 @@ import pytest
 import cudf._lib.pylibcudf as plc
 
 from cudf_polars.containers import NamedColumn
-from cudf_polars.dsl.ir import broadcast
+from cudf_polars.utils.broadcasting import broadcast
 
 
 @pytest.mark.parametrize("target", [4, None])

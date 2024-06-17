@@ -29,7 +29,7 @@ import cudf._lib.pylibcudf as plc
 
 import cudf_polars.dsl.expr as expr
 from cudf_polars.containers import DataFrame, NamedColumn
-from cudf_polars.utils import sorting
+from cudf_polars.utils import broadcasting, sorting
 
 if TYPE_CHECKING:
     from collections.abc import MutableMapping
@@ -57,70 +57,6 @@ __all__ = [
     "Union",
     "HConcat",
 ]
-
-
-def broadcast(
-    *columns: NamedColumn, target_length: int | None = None
-) -> list[NamedColumn]:
-    """
-    Broadcast a sequence of columns to a common length.
-
-    Parameters
-    ----------
-    columns
-        Columns to broadcast.
-    target_length
-        Optional length to broadcast to. If not provided, uses the
-        non-unit length of existing columns.
-
-    Returns
-    -------
-    List of broadcasted columns all of the same length.
-
-    Raises
-    ------
-    RuntimeError
-        If broadcasting is not possible.
-
-    Notes
-    -----
-    In evaluation of a set of expressions, polars type-puns length-1
-    columns with scalars. When we insert these into a DataFrame
-    object, we need to ensure they are of equal length. This function
-    takes some columns, some of which may be length-1 and ensures that
-    all length-1 columns are broadcast to the length of the others.
-
-    Broadcasting is only possible if the set of lengths of the input
-    columns is a subset of ``{1, n}`` for some (fixed) ``n``. If
-    ``target_length`` is provided and not all columns are length-1
-    (i.e. ``n != 1``), then ``target_length`` must be equal to ``n``.
-    """
-    lengths: set[int] = {column.obj.size() for column in columns}
-    if lengths == {1}:
-        if target_length is None:
-            return list(columns)
-        nrows = target_length
-    else:
-        try:
-            (nrows,) = lengths.difference([1])
-        except ValueError as e:
-            raise RuntimeError("Mismatching column lengths") from e
-        if target_length is not None and nrows != target_length:
-            raise RuntimeError(
-                f"Cannot broadcast columns of length {nrows=} to {target_length=}"
-            )
-    return [
-        column
-        if column.obj.size() != 1
-        else NamedColumn(
-            plc.Column.from_scalar(column.obj_scalar, nrows),
-            column.name,
-            is_sorted=plc.types.Sorted.YES,
-            order=plc.types.Order.ASCENDING,
-            null_order=plc.types.NullOrder.BEFORE,
-        )
-        for column in columns
-    ]
 
 
 @dataclasses.dataclass(slots=True)
@@ -244,7 +180,9 @@ class Scan(IR):
         if self.predicate is None:
             return df
         else:
-            (mask,) = broadcast(self.predicate.evaluate(df), target_length=df.num_rows)
+            (mask,) = broadcasting.broadcast(
+                self.predicate.evaluate(df), target_length=df.num_rows
+            )
             return df.filter(mask)
 
 
@@ -306,7 +244,9 @@ class DataFrameScan(IR):
             c.obj.type() == dtype for c, dtype in zip(df.columns, self.schema.values())
         )
         if self.predicate is not None:
-            (mask,) = broadcast(self.predicate.evaluate(df), target_length=df.num_rows)
+            (mask,) = broadcasting.broadcast(
+                self.predicate.evaluate(df), target_length=df.num_rows
+            )
             return df.filter(mask)
         else:
             return df
@@ -329,7 +269,7 @@ class Select(IR):
         # Handle any broadcasting
         columns = [e.evaluate(df) for e in self.expr]
         if self.should_broadcast:
-            columns = broadcast(*columns)
+            columns = broadcasting.broadcast(*columns)
         return DataFrame(columns)
 
 
@@ -351,7 +291,7 @@ class Reduce(IR):
     ) -> DataFrame:  # pragma: no cover; polars doesn't emit this node yet
         """Evaluate and return a dataframe."""
         df = self.df.evaluate(cache=cache)
-        columns = broadcast(*(e.evaluate(df) for e in self.expr))
+        columns = broadcasting.broadcast(*(e.evaluate(df) for e in self.expr))
         assert all(column.obj.size() == 1 for column in columns)
         return DataFrame(columns)
 
@@ -445,7 +385,7 @@ class GroupBy(IR):
     def evaluate(self, *, cache: MutableMapping[int, DataFrame]) -> DataFrame:
         """Evaluate and return a dataframe."""
         df = self.df.evaluate(cache=cache)
-        keys = broadcast(
+        keys = broadcasting.broadcast(
             *(k.evaluate(df) for k in self.keys), target_length=df.num_rows
         )
         # TODO: use sorted information, need to expose column_order
@@ -565,12 +505,12 @@ class Join(IR):
         left = self.left.evaluate(cache=cache)
         right = self.right.evaluate(cache=cache)
         left_on = DataFrame(
-            broadcast(
+            broadcasting.broadcast(
                 *(e.evaluate(left) for e in self.left_on), target_length=left.num_rows
             )
         )
         right_on = DataFrame(
-            broadcast(
+            broadcasting.broadcast(
                 *(e.evaluate(right) for e in self.right_on),
                 target_length=right.num_rows,
             )
@@ -642,7 +582,7 @@ class HStack(IR):
         df = self.df.evaluate(cache=cache)
         columns = [c.evaluate(df) for c in self.columns]
         if self.should_broadcast:
-            columns = broadcast(*columns, target_length=df.num_rows)
+            columns = broadcasting.broadcast(*columns, target_length=df.num_rows)
         else:
             # Polars ensures this is true, but let's make sure nothing
             # went wrong. In this case, the parent node is a
@@ -765,7 +705,7 @@ class Sort(IR):
     def evaluate(self, *, cache: MutableMapping[int, DataFrame]) -> DataFrame:
         """Evaluate and return a dataframe."""
         df = self.df.evaluate(cache=cache)
-        sort_keys = broadcast(
+        sort_keys = broadcasting.broadcast(
             *(k.evaluate(df) for k in self.by), target_length=df.num_rows
         )
         names = {c.name: i for i, c in enumerate(df.columns)}
@@ -823,7 +763,9 @@ class Filter(IR):
     def evaluate(self, *, cache: MutableMapping[int, DataFrame]) -> DataFrame:
         """Evaluate and return a dataframe."""
         df = self.df.evaluate(cache=cache)
-        (mask,) = broadcast(self.mask.evaluate(df), target_length=df.num_rows)
+        (mask,) = broadcasting.broadcast(
+            self.mask.evaluate(df), target_length=df.num_rows
+        )
         return df.filter(mask)
 
 
@@ -838,7 +780,7 @@ class Projection(IR):
         """Evaluate and return a dataframe."""
         df = self.df.evaluate(cache=cache)
         # This can reorder things.
-        columns = broadcast(
+        columns = broadcasting.broadcast(
             *df.select(list(self.schema.keys())).columns, target_length=df.num_rows
         )
         return DataFrame(columns)
