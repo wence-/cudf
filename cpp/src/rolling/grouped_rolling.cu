@@ -1225,7 +1225,8 @@ std::unique_ptr<column> grouped_range_rolling_window_v2(table_view const& group_
 {
   CUDF_FUNC_RANGE();
   namespace utils = detail::rolling;
-  auto preceding  = utils::make_range_window_bounds<utils::direction::PRECEDING>(
+  // TODO: Avoid constructing the groupby-helper twice.
+  auto preceding = utils::make_range_window_bounds<utils::direction::PRECEDING>(
     group_keys,
     orderby,
     order,

@@ -515,12 +515,6 @@ struct range_window_clamper {
     auto d_begin           = d_orderby->begin<OrderbyT>();
     auto d_end             = d_orderby->end<OrderbyT>();
     auto const d_row_delta = dynamic_cast<ScalarT const&>(*row_delta).data();
-    // auto copy_n            = [&](auto&& kernel) {
-    //   thrust::copy_n(rmm::exec_policy_nosync(stream),
-    //                  cudf::detail::make_counting_transform_iterator(0, kernel),
-    //                  orderby.size(),
-    //                  result->mutable_view().begin<size_type>());
-    // };
     if (group_keys.num_columns() == 0) {
       if (orderby.has_nulls()) {
         thrust::copy_n(
@@ -535,30 +529,44 @@ struct range_window_clamper {
           orderby.size(),
           result->mutable_view().begin<size_type>());
       } else {
-        CUDF_FAIL("BARF");
-        // copy_n(distance_kernel<ungrouped, OrderbyT, DeltaT>{
-        //   ungrouped{orderby.size()}, d_row_delta, d_begin, d_end});
+        thrust::copy_n(rmm::exec_policy_nosync(stream),
+                       cudf::detail::make_counting_transform_iterator(
+                         0,
+                         distance_kernel<ungrouped, OrderbyT, DeltaT>{
+                           ungrouped{orderby.size()}, d_row_delta, d_begin, d_end}),
+                       orderby.size(),
+                       result->mutable_view().begin<size_type>());
       }
     } else {
-      CUDF_FAIL("BARF");
-      // CUDF_EXPECTS(orderby.size() == group_keys.num_rows(),
-      //              "group_keys and orderby must have the same number of rows",
-      //              std::invalid_argument);
-      // using sort_helper = cudf::groupby::detail::sort::sort_groupby_helper;
-      // sort_helper helper{group_keys, null_policy::INCLUDE, sorted::YES, {}};
-      // auto const& labels  = helper.group_labels(stream);
-      // auto const& offsets = helper.group_offsets(stream);
-      // if (orderby.has_nulls()) {
-      //   copy_n(distance_kernel<grouped_with_nulls, OrderbyT, DeltaT>{
-      //     grouped_with_nulls{
-      //       labels.data(), offsets.data(), labels.size(), *d_orderby, nulls_at_start, stream},
-      //     d_row_delta,
-      //     d_begin,
-      //     d_end});
-      // } else {
-      //   copy_n(distance_kernel<grouped, OrderbyT, DeltaT>{
-      //     grouped{labels.data(), offsets.data()}, d_row_delta, d_begin, d_end});
-      // }
+      CUDF_EXPECTS(orderby.size() == group_keys.num_rows(),
+                   "group_keys and orderby must have the same number of rows",
+                   std::invalid_argument);
+      using sort_helper = cudf::groupby::detail::sort::sort_groupby_helper;
+      sort_helper helper{group_keys, null_policy::INCLUDE, sorted::YES, {}};
+      auto const& labels  = helper.group_labels(stream);
+      auto const& offsets = helper.group_offsets(stream);
+      if (orderby.has_nulls()) {
+        thrust::copy_n(
+          rmm::exec_policy_nosync(stream),
+          cudf::detail::make_counting_transform_iterator(
+            0,
+            distance_kernel<grouped_with_nulls, OrderbyT, DeltaT>{
+              grouped_with_nulls{
+                labels.data(), offsets.data(), labels.size(), *d_orderby, nulls_at_start, stream},
+              d_row_delta,
+              d_begin,
+              d_end}),
+          orderby.size(),
+          result->mutable_view().begin<size_type>());
+      } else {
+        thrust::copy_n(rmm::exec_policy_nosync(stream),
+                       cudf::detail::make_counting_transform_iterator(
+                         0,
+                         distance_kernel<grouped, OrderbyT, DeltaT>{
+                           grouped{labels.data(), offsets.data()}, d_row_delta, d_begin, d_end}),
+                       orderby.size(),
+                       result->mutable_view().begin<size_type>());
+      }
     }
     return result;
   }
