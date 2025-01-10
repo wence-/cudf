@@ -1211,4 +1211,38 @@ std::unique_ptr<column> grouped_range_rolling_window(table_view const& group_key
                                               mr);
 }
 
+std::unique_ptr<column> grouped_range_rolling_window_v2(table_view const& group_keys,
+                                                        column_view const& orderby,
+                                                        column_view const& values,
+                                                        cudf::order order,
+                                                        cudf::null_order null_order,
+                                                        range_window_bounds const& preceding_window,
+                                                        range_window_bounds const& following_window,
+                                                        size_type min_periods,
+                                                        rolling_aggregation const& agg,
+                                                        rmm::cuda_stream_view stream,
+                                                        rmm::device_async_resource_ref mr)
+{
+  CUDF_FUNC_RANGE();
+  namespace utils = detail::rolling;
+  auto preceding  = utils::make_range_window_bounds<utils::direction::PRECEDING>(
+    group_keys,
+    orderby,
+    order,
+    null_order,
+    &preceding_window.range_scalar(),
+    utils::window_type::BOUNDED_CLOSED,
+    stream,
+    cudf::get_current_device_resource_ref());
+  auto following = utils::make_range_window_bounds<utils::direction::FOLLOWING>(
+    group_keys,
+    orderby,
+    order,
+    null_order,
+    &following_window.range_scalar(),
+    utils::window_type::BOUNDED_CLOSED,
+    stream,
+    cudf::get_current_device_resource_ref());
+  return detail::rolling_window(values, preceding->view(), following->view(), 1, agg, stream, mr);
+}
 }  // namespace cudf
