@@ -36,6 +36,7 @@
 #include <cudf/detail/device_scalar.hpp>
 #include <cudf/detail/gather.hpp>
 #include <cudf/detail/groupby/sort_helper.hpp>
+#include <cudf/detail/nvtx/ranges.hpp>
 #include <cudf/detail/unary.hpp>
 #include <cudf/detail/utilities/cuda.cuh>
 #include <cudf/detail/utilities/device_operators.cuh>
@@ -74,6 +75,7 @@ std::unique_ptr<column> expand_to_column(Calculator const& calc,
                                          size_type const& num_rows,
                                          rmm::cuda_stream_view stream)
 {
+  CUDF_FUNC_RANGE();
   auto window_column = cudf::make_numeric_column(
     cudf::data_type{type_to_id<size_type>()}, num_rows, cudf::mask_state::UNALLOCATED, stream);
 

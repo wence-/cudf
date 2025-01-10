@@ -437,7 +437,7 @@ get_null_bounds_for_orderby_column(column_view const& orderby_column,
 {
   // For each group, the null values are clustered at the beginning or the end of the group.
   // These nulls cannot participate, except in their own window.
-
+  CUDF_FUNC_RANGE();
   auto const num_groups = group_offsets.size() - 1;
 
   if (orderby_column.has_nulls()) {
