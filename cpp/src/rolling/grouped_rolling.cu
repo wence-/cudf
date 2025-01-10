@@ -32,6 +32,9 @@
 #include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 
+#include <rmm/cuda_stream_view.hpp>
+
+#include <cub/device/device_segmented_reduce.cuh>
 #include <cuda/functional>
 #include <thrust/binary_search.h>
 #include <thrust/execution_policy.h>
@@ -446,45 +449,55 @@ get_null_bounds_for_orderby_column(column_view const& orderby_column,
 
     auto p_orderby_device_view = column_device_view::create(orderby_column, stream);
 
+    auto is_null_it = cudf::detail::make_counting_transform_iterator(
+      size_type{0},
+      cuda::proclaim_return_type<size_type>(
+        [d_orderby = *p_orderby_device_view] __device__(auto i) {
+          return static_cast<size_type>(d_orderby.is_null_nocheck(i));
+        }));
+    auto null_counts = rmm::device_uvector<size_type>(num_groups, stream);
+    size_t temp_storage_bytes{0};
+    cub::DeviceSegmentedReduce::Sum(nullptr,
+                                    temp_storage_bytes,
+                                    is_null_it,
+                                    null_counts.begin(),
+                                    num_groups,
+                                    group_offsets.begin(),
+                                    group_offsets.begin() + 1,
+                                    stream.value());
+    auto temp_storage = rmm::device_buffer(temp_storage_bytes, stream);
+    cub::DeviceSegmentedReduce::Sum(temp_storage.data(),
+                                    temp_storage_bytes,
+                                    is_null_it,
+                                    null_counts.begin(),
+                                    num_groups,
+                                    group_offsets.begin(),
+                                    group_offsets.begin() + 1,
+                                    stream.value());
+
     // Null timestamps exist. Find null bounds, per group.
-    thrust::for_each(
-      rmm::exec_policy(stream),
-      thrust::make_counting_iterator(static_cast<size_type>(0)),
-      thrust::make_counting_iterator(static_cast<size_type>(num_groups)),
-      [d_orderby       = *p_orderby_device_view,
-       d_group_offsets = group_offsets.data(),
-       d_null_start    = null_start.data(),
-       d_null_end      = null_end.data()] __device__(auto group_label) {
-        auto group_start           = d_group_offsets[group_label];
-        auto group_end             = d_group_offsets[group_label + 1];
-        auto first_element_is_null = d_orderby.is_null_nocheck(group_start);
-        auto last_element_is_null  = d_orderby.is_null_nocheck(group_end - 1);
-        if (!first_element_is_null && !last_element_is_null) {
-          // Short circuit: No nulls.
-          d_null_start[group_label] = group_start;
-          d_null_end[group_label]   = group_start;
-        } else if (first_element_is_null && last_element_is_null) {
-          // Short circuit: All nulls.
-          d_null_start[group_label] = group_start;
-          d_null_end[group_label]   = group_end;
-        } else if (first_element_is_null) {
-          // NULLS FIRST.
-          d_null_start[group_label] = group_start;
-          d_null_end[group_label]   = *thrust::partition_point(
-            thrust::seq,
-            thrust::make_counting_iterator(group_start),
-            thrust::make_counting_iterator(group_end),
-            [&d_orderby] __device__(auto i) { return d_orderby.is_null_nocheck(i); });
-        } else {
-          // NULLS LAST.
-          d_null_end[group_label]   = group_end;
-          d_null_start[group_label] = *thrust::partition_point(
-            thrust::seq,
-            thrust::make_counting_iterator(group_start),
-            thrust::make_counting_iterator(group_end),
-            [&d_orderby] __device__(auto i) { return d_orderby.is_valid_nocheck(i); });
-        }
-      });
+    thrust::for_each(rmm::exec_policy_nosync(stream),
+                     thrust::make_counting_iterator(static_cast<size_type>(0)),
+                     thrust::make_counting_iterator(static_cast<size_type>(num_groups)),
+                     [d_orderby       = *p_orderby_device_view,
+                      d_group_offsets = group_offsets.data(),
+                      d_null_start    = null_start.data(),
+                      d_null_count    = null_counts.data(),
+                      d_null_end      = null_end.data()] __device__(auto group_label) {
+                       auto group_start           = d_group_offsets[group_label];
+                       auto group_end             = d_group_offsets[group_label + 1];
+                       auto null_count            = d_null_count[group_label];
+                       auto first_element_is_null = d_orderby.is_null_nocheck(group_start);
+                       if (first_element_is_null) {
+                         // NULLS FIRST.
+                         d_null_start[group_label] = group_start;
+                         d_null_end[group_label]   = group_start + null_count;
+                       } else {
+                         // NULLS LAST.
+                         d_null_start[group_label] = group_end - null_count;
+                         d_null_end[group_label]   = group_end;
+                       }
+                     });
 
     return std::make_tuple(std::move(null_start), std::move(null_end));
   } else {
