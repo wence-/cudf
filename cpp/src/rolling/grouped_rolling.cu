@@ -1225,25 +1225,49 @@ std::unique_ptr<column> grouped_range_rolling_window_v2(table_view const& group_
 {
   CUDF_FUNC_RANGE();
   namespace utils = detail::rolling;
-  // TODO: Avoid constructing the groupby-helper twice.
-  auto preceding = utils::make_range_window_bounds<utils::direction::PRECEDING>(
-    group_keys,
-    orderby,
-    order,
-    null_order,
-    &preceding_window.range_scalar(),
-    utils::window_type::BOUNDED_CLOSED,
-    stream,
-    cudf::get_current_device_resource_ref());
-  auto following = utils::make_range_window_bounds<utils::direction::FOLLOWING>(
-    group_keys,
-    orderby,
-    order,
-    null_order,
-    &following_window.range_scalar(),
-    utils::window_type::BOUNDED_CLOSED,
-    stream,
-    cudf::get_current_device_resource_ref());
+  auto make_preceding =
+    [&](std::optional<std::pair<rmm::device_uvector<cudf::size_type> const&,
+                                rmm::device_uvector<cudf::size_type> const&>> const& grouping) {
+      return utils::make_range_window_bounds<utils::direction::PRECEDING>(
+        orderby,
+        grouping,
+        order,
+        null_order,
+        &preceding_window.range_scalar(),
+        utils::window_type::BOUNDED_CLOSED,
+        stream,
+        mr);
+    };
+  auto make_following =
+    [&](std::optional<std::pair<rmm::device_uvector<cudf::size_type> const&,
+                                rmm::device_uvector<cudf::size_type> const&>> const& grouping) {
+      return utils::make_range_window_bounds<utils::direction::FOLLOWING>(
+        orderby,
+        grouping,
+        order,
+        null_order,
+        &following_window.range_scalar(),
+        utils::window_type::BOUNDED_CLOSED,
+        stream,
+        mr);
+    };
+  auto [preceding, following] = [&]() {
+    if (group_keys.num_columns() > 0) {
+      CUDF_EXPECTS(group_keys.num_rows() == orderby.size(),
+                   "Grouping table and orderby column must have same number of rows.");
+      using sort_helper = cudf::groupby::detail::sort::sort_groupby_helper;
+      sort_helper helper{group_keys, null_policy::INCLUDE, sorted::YES, {}};
+      auto const& labels  = helper.group_labels(stream);
+      auto const& offsets = helper.group_offsets(stream);
+      std::pair<rmm::device_uvector<cudf::size_type> const&,
+                rmm::device_uvector<cudf::size_type> const&>
+        pair = {labels, offsets};
+      return std::pair{std::move(make_preceding(pair)), std::move(make_following(pair))};
+    } else {
+      return std::pair{std::move(make_preceding(std::nullopt)),
+                       std::move(make_following(std::nullopt))};
+    }
+  }();
   return detail::rolling_window(values, preceding->view(), following->view(), 1, agg, stream, mr);
 }
 }  // namespace cudf
