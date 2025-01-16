@@ -16,8 +16,10 @@
 
 #pragma once
 
+#include <cudf/aggregation.hpp>
 #include <cudf/rolling/range_window_bounds.hpp>
 #include <cudf/types.hpp>
+#include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/export.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 
@@ -567,6 +569,19 @@ std::unique_ptr<column> grouped_range_rolling_window(
   range_window_bounds const& following,
   size_type min_periods,
   rolling_aggregation const& aggr,
+  rmm::cuda_stream_view stream      = cudf::get_default_stream(),
+  rmm::device_async_resource_ref mr = cudf::get_current_device_resource_ref());
+
+std::unique_ptr<column> grouped_range_rolling_window_v2(
+  table_view const& group_keys,
+  column_view const& orderby,
+  column_view const& values,
+  cudf::order order,
+  cudf::null_order null_order,
+  range_window_bounds const& preceding_window,
+  range_window_bounds const& following_window,
+  size_type min_periods,
+  rolling_aggregation const& agg,
   rmm::cuda_stream_view stream      = cudf::get_default_stream(),
   rmm::device_async_resource_ref mr = cudf::get_current_device_resource_ref());
 
