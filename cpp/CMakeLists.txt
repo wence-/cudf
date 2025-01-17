@@ -801,11 +801,6 @@ set_source_files_properties(
   PROPERTIES COMPILE_DEFINITIONS "_FILE_OFFSET_BITS=64"
 )
 
-set_source_files_properties(
-    src/rolling/range_rolling.cu
-  PROPERTIES COMPILE_OPTIONS "-lineinfo;-g;-O0"
-)
-
 set_property(
   SOURCE src/io/parquet/writer_impl.cu
   APPEND

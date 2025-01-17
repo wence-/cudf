@@ -26,7 +26,6 @@
 #include <cudf/detail/rolling.hpp>
 #include <cudf/detail/utilities/assert.cuh>
 #include <cudf/detail/utilities/vector_factories.hpp>
-#include <cudf/reduction.hpp>
 #include <cudf/rolling/range_window_bounds.hpp>
 #include <cudf/types.hpp>
 #include <cudf/unary.hpp>
@@ -624,11 +623,6 @@ std::unique_ptr<column> range_window_ASC(column_view const& input,
 
   auto const following_column =
     cudf::detail::expand_to_column(following_calculator, input.size(), stream);
-  auto maxagg = cudf::reduce(preceding_column->view(),
-                             *cudf::make_max_aggregation<cudf::reduce_aggregation>(),
-                             preceding_column->type());
-  auto val    = dynamic_cast<cudf::numeric_scalar<cudf::size_type>*>(maxagg.get())->value();
-  std::cout << "maxval (old)" << val << std::endl;
 
   return cudf::detail::rolling_window(
     input, preceding_column->view(), following_column->view(), min_periods, aggr, stream, mr);

@@ -24,7 +24,6 @@
 #include <cudf/detail/groupby/sort_helper.hpp>
 #include <cudf/detail/iterator.cuh>
 #include <cudf/detail/nvtx/ranges.hpp>
-#include <cudf/reduction.hpp>
 #include <cudf/rolling.hpp>
 #include <cudf/rolling/range_window_bounds.hpp>
 #include <cudf/types.hpp>
@@ -235,10 +234,6 @@ std::unique_ptr<column> grouped_range_rolling_window_v2(table_view const& group_
                        std::move(make_following(std::nullopt))};
     }
   }();
-  auto maxagg = cudf::reduce(
-    preceding->view(), *cudf::make_max_aggregation<cudf::reduce_aggregation>(), preceding->type());
-  auto val = dynamic_cast<cudf::numeric_scalar<cudf::size_type>*>(maxagg.get())->value();
-  std::cout << "maxval " << val << std::endl;
   return detail::rolling_window(values, preceding->view(), following->view(), 1, agg, stream, mr);
 }
 }  // namespace cudf
