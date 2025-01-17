@@ -43,6 +43,7 @@ namespace detail::rolling {
 struct ungrouped {
   cudf::size_type num_rows_;
 
+  static constexpr bool has_nulls{false};
   /**
    * @brief Return information about the current row.
    *
@@ -55,19 +56,6 @@ struct ungrouped {
     row_info(size_type i) const noexcept
   {
     return {0, 0, num_rows_, 0, 0, 0, num_rows_};
-  }
-
-  /**
-   * @brief Is the given row a null row?
-   *
-   * @param i The row
-   * @param null_count The null_count of the group
-   * @returns true if the row is null, false otherwise.
-   */
-  [[nodiscard]] __device__ constexpr bool is_null(
-    [[maybe_unused]] cudf::size_type i, [[maybe_unused]] cudf::size_type null_count) const noexcept
-  {
-    return false;
   }
 };
 
@@ -84,6 +72,7 @@ struct grouped {
   cudf::size_type const* labels_;
   cudf::size_type const* offsets_;
 
+  static constexpr bool has_nulls{false};
   /**
    * @copydoc ungrouped::row_info
    */
@@ -95,15 +84,6 @@ struct grouped {
     auto const group_start = offsets_[label];
     auto const group_end   = offsets_[label + 1];
     return {0, group_start, group_end, group_start, group_start, group_start, group_end};
-  }
-
-  /**
-   * @copydoc ungrouped::is_null
-   */
-  [[nodiscard]] __device__ constexpr bool is_null(
-    [[maybe_unused]] cudf::size_type i, [[maybe_unused]] cudf::size_type null_count) const noexcept
-  {
-    return false;
   }
 };
 
@@ -123,8 +103,8 @@ template <typename Grouping, direction Direction>
 struct fixed_window_clamper {
   Grouping groups;
   cudf::size_type delta;
-  static_assert(cuda::std::disjunction<cuda::std::is_same<Grouping, ungrouped>,
-                                       cuda::std::is_same<Grouping, grouped>>(),
+  static_assert(cuda::std::is_same_v<Grouping, ungrouped> ||
+                  cuda::std::is_same_v<Grouping, grouped>,
                 "Invalid grouping descriptor");
 
   [[nodiscard]] __device__ constexpr cudf::size_type operator()(cudf::size_type i) const

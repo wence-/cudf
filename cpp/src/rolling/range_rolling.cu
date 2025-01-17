@@ -24,6 +24,7 @@
 #include <cudf/detail/groupby/sort_helper.hpp>
 #include <cudf/detail/iterator.cuh>
 #include <cudf/detail/nvtx/ranges.hpp>
+#include <cudf/reduction.hpp>
 #include <cudf/rolling.hpp>
 #include <cudf/rolling/range_window_bounds.hpp>
 #include <cudf/types.hpp>
@@ -67,8 +68,9 @@ namespace detail {
 template <rolling::direction Direction>
 [[nodiscard]] std::unique_ptr<column> make_range_window_bounds(
   column_view const& orderby,
-  std::optional<std::pair<rmm::device_uvector<cudf::size_type> const&,
-                          rmm::device_uvector<cudf::size_type> const&>> const& grouping,
+  std::optional<std::tuple<rmm::device_uvector<cudf::size_type> const&,
+                           rmm::device_uvector<cudf::size_type> const&,
+                           rmm::device_uvector<cudf::size_type> const&>> const& grouping,
   order order,
   null_order null_order,
   scalar const* row_delta,
@@ -177,6 +179,47 @@ template <rolling::direction Direction>
   }
 }
 
+/**
+ * @brief Compute the number of nulls in each group.
+ *
+ * @param orderby Column with null mask.
+ * @param offsets Offset array defining the (sorted) groups.
+ * @param stream CUDA stream used for kernel launches
+ * @return device_uvector containing the null count per group.
+ */
+[[nodiscard]] rmm::device_uvector<cudf::size_type> nulls_per_group(
+  column_view const& orderby,
+  rmm::device_uvector<size_type> const& offsets,
+  rmm::cuda_stream_view stream)
+{
+  auto d_orderby        = column_device_view::create(orderby, stream);
+  auto const num_groups = offsets.size() - 1;
+  std::size_t bytes{0};
+  auto is_null_it = cudf::detail::make_counting_transform_iterator(
+    cudf::size_type{0}, [orderby = *d_orderby] __device__(size_type i) -> size_type {
+      return static_cast<size_type>(orderby.is_null_nocheck(i));
+    });
+  rmm::device_uvector<cudf::size_type> null_counts{num_groups, stream};
+  cub::DeviceSegmentedReduce::Sum(nullptr,
+                                  bytes,
+                                  is_null_it,
+                                  null_counts.begin(),
+                                  num_groups,
+                                  offsets.begin(),
+                                  offsets.begin() + 1,
+                                  stream.value());
+  auto tmp = rmm::device_buffer(bytes, stream);
+  cub::DeviceSegmentedReduce::Sum(tmp.data(),
+                                  bytes,
+                                  is_null_it,
+                                  null_counts.begin(),
+                                  num_groups,
+                                  offsets.begin(),
+                                  offsets.begin() + 1,
+                                  stream.value());
+  return null_counts;
+}
+
 }  // namespace detail
 std::unique_ptr<column> grouped_range_rolling_window_v2(table_view const& group_keys,
                                                         column_view const& orderby,
@@ -192,8 +235,9 @@ std::unique_ptr<column> grouped_range_rolling_window_v2(table_view const& group_
 {
   CUDF_FUNC_RANGE();
   auto make_preceding =
-    [&](std::optional<std::pair<rmm::device_uvector<cudf::size_type> const&,
-                                rmm::device_uvector<cudf::size_type> const&>> const& grouping) {
+    [&](std::optional<std::tuple<rmm::device_uvector<cudf::size_type> const&,
+                                 rmm::device_uvector<cudf::size_type> const&,
+                                 rmm::device_uvector<cudf::size_type> const&>> const& grouping) {
       return detail::make_range_window_bounds<detail::rolling::direction::PRECEDING>(
         orderby,
         grouping,
@@ -205,8 +249,9 @@ std::unique_ptr<column> grouped_range_rolling_window_v2(table_view const& group_
         mr);
     };
   auto make_following =
-    [&](std::optional<std::pair<rmm::device_uvector<cudf::size_type> const&,
-                                rmm::device_uvector<cudf::size_type> const&>> const& grouping) {
+    [&](std::optional<std::tuple<rmm::device_uvector<cudf::size_type> const&,
+                                 rmm::device_uvector<cudf::size_type> const&,
+                                 rmm::device_uvector<cudf::size_type> const&>> const& grouping) {
       return detail::make_range_window_bounds<detail::rolling::direction::FOLLOWING>(
         orderby,
         grouping,
@@ -223,12 +268,15 @@ std::unique_ptr<column> grouped_range_rolling_window_v2(table_view const& group_
                    "Grouping table and orderby column must have same number of rows.");
       using sort_helper = cudf::groupby::detail::sort::sort_groupby_helper;
       sort_helper helper{group_keys, null_policy::INCLUDE, sorted::YES, {}};
-      auto const& labels  = helper.group_labels(stream);
-      auto const& offsets = helper.group_offsets(stream);
-      std::pair<rmm::device_uvector<cudf::size_type> const&,
-                rmm::device_uvector<cudf::size_type> const&>
-        pair = {labels, offsets};
-      return std::pair{std::move(make_preceding(pair)), std::move(make_following(pair))};
+      auto const& labels   = helper.group_labels(stream);
+      auto const& offsets  = helper.group_offsets(stream);
+      auto nulls_per_group = orderby.has_nulls() ? detail::nulls_per_group(orderby, offsets, stream)
+                                                 : rmm::device_uvector<size_type>{0, stream};
+      std::tuple<rmm::device_uvector<cudf::size_type> const&,
+                 rmm::device_uvector<cudf::size_type> const&,
+                 rmm::device_uvector<cudf::size_type> const&>
+        grouping = {labels, offsets, nulls_per_group};
+      return std::pair{std::move(make_preceding(grouping)), std::move(make_following(grouping))};
     } else {
       return std::pair{std::move(make_preceding(std::nullopt)),
                        std::move(make_following(std::nullopt))};
