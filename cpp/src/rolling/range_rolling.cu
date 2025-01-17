@@ -88,49 +88,48 @@ template <rolling::direction Direction>
   bool const nulls_at_start = (order == order::ASCENDING && null_order == null_order::BEFORE) ||
                               (order == order::DESCENDING && null_order == null_order::AFTER);
 
-  using ret_t = std::pair<rolling::window_type, scalar const*>;
+  using ret_t = std::pair<rolling::window_tag, scalar const*>;
   auto [window_tag, row_delta] =
     std::visit(match{
                  [](bounded_closed win) -> ret_t {
-                   return {rolling::window_type::BOUNDED_CLOSED, &win.delta};
+                   return {rolling::window_tag::BOUNDED_CLOSED, &win.delta};
                  },
                  [](bounded_open win) -> ret_t {
-                   return {rolling::window_type::BOUNDED_OPEN, &win.delta};
+                   return {rolling::window_tag::BOUNDED_OPEN, &win.delta};
                  },
                  [](unbounded) -> ret_t {
-                   return {rolling::window_type::UNBOUNDED, nullptr};
+                   return {rolling::window_tag::UNBOUNDED, nullptr};
                  },
                  [](current_row) -> ret_t {
-                   return {rolling::window_type::CURRENT_ROW, nullptr};
+                   return {rolling::window_tag::CURRENT_ROW, nullptr};
                  },
                },
                window);
 
-  if (window_tag == rolling::window_type::UNBOUNDED && order == order::ASCENDING) {
+  if (window_tag == rolling::window_tag::UNBOUNDED && order == order::ASCENDING) {
     return type_dispatcher(
       orderby.type(),
-      rolling::range_window_clamper<rolling::window_type::UNBOUNDED, Direction, order::ASCENDING>{},
+      rolling::range_window_clamper<Direction, rolling::window_tag::UNBOUNDED, order::ASCENDING>{},
       orderby,
       grouping,
       nulls_at_start,
       row_delta,
       stream,
       mr);
-  } else if (window_tag == rolling::window_type::UNBOUNDED && order == order::DESCENDING) {
+  } else if (window_tag == rolling::window_tag::UNBOUNDED && order == order::DESCENDING) {
+    return type_dispatcher(
+      orderby.type(),
+      rolling::range_window_clamper<Direction, rolling::window_tag::UNBOUNDED, order::DESCENDING>{},
+      orderby,
+      grouping,
+      nulls_at_start,
+      row_delta,
+      stream,
+      mr);
+  } else if (window_tag == rolling::window_tag::CURRENT_ROW && order == order::ASCENDING) {
     return type_dispatcher(orderby.type(),
-                           rolling::range_window_clamper<rolling::window_type::UNBOUNDED,
-                                                         Direction,
-                                                         order::DESCENDING>{},
-                           orderby,
-                           grouping,
-                           nulls_at_start,
-                           row_delta,
-                           stream,
-                           mr);
-  } else if (window_tag == rolling::window_type::CURRENT_ROW && order == order::ASCENDING) {
-    return type_dispatcher(orderby.type(),
-                           rolling::range_window_clamper<rolling::window_type::CURRENT_ROW,
-                                                         Direction,
+                           rolling::range_window_clamper<Direction,
+                                                         rolling::window_tag::CURRENT_ROW,
                                                          order::ASCENDING>{},
                            orderby,
                            grouping,
@@ -138,10 +137,10 @@ template <rolling::direction Direction>
                            row_delta,
                            stream,
                            mr);
-  } else if (window_tag == rolling::window_type::CURRENT_ROW && order == order::DESCENDING) {
+  } else if (window_tag == rolling::window_tag::CURRENT_ROW && order == order::DESCENDING) {
     return type_dispatcher(orderby.type(),
-                           rolling::range_window_clamper<rolling::window_type::CURRENT_ROW,
-                                                         Direction,
+                           rolling::range_window_clamper<Direction,
+                                                         rolling::window_tag::CURRENT_ROW,
                                                          order::DESCENDING>{},
                            orderby,
                            grouping,
@@ -149,10 +148,10 @@ template <rolling::direction Direction>
                            row_delta,
                            stream,
                            mr);
-  } else if (window_tag == rolling::window_type::BOUNDED_OPEN && order == order::ASCENDING) {
+  } else if (window_tag == rolling::window_tag::BOUNDED_OPEN && order == order::ASCENDING) {
     return type_dispatcher(orderby.type(),
-                           rolling::range_window_clamper<rolling::window_type::BOUNDED_OPEN,
-                                                         Direction,
+                           rolling::range_window_clamper<Direction,
+                                                         rolling::window_tag::BOUNDED_OPEN,
                                                          order::ASCENDING>{},
                            orderby,
                            grouping,
@@ -160,10 +159,10 @@ template <rolling::direction Direction>
                            row_delta,
                            stream,
                            mr);
-  } else if (window_tag == rolling::window_type::BOUNDED_OPEN && order == order::DESCENDING) {
+  } else if (window_tag == rolling::window_tag::BOUNDED_OPEN && order == order::DESCENDING) {
     return type_dispatcher(orderby.type(),
-                           rolling::range_window_clamper<rolling::window_type::BOUNDED_OPEN,
-                                                         Direction,
+                           rolling::range_window_clamper<Direction,
+                                                         rolling::window_tag::BOUNDED_OPEN,
                                                          order::DESCENDING>{},
                            orderby,
                            grouping,
@@ -171,10 +170,10 @@ template <rolling::direction Direction>
                            row_delta,
                            stream,
                            mr);
-  } else if (window_tag == rolling::window_type::BOUNDED_CLOSED && order == order::ASCENDING) {
+  } else if (window_tag == rolling::window_tag::BOUNDED_CLOSED && order == order::ASCENDING) {
     return type_dispatcher(orderby.type(),
-                           rolling::range_window_clamper<rolling::window_type::BOUNDED_CLOSED,
-                                                         Direction,
+                           rolling::range_window_clamper<Direction,
+                                                         rolling::window_tag::BOUNDED_CLOSED,
                                                          order::ASCENDING>{},
                            orderby,
                            grouping,
@@ -182,10 +181,10 @@ template <rolling::direction Direction>
                            row_delta,
                            stream,
                            mr);
-  } else if (window_tag == rolling::window_type::BOUNDED_CLOSED && order == order::DESCENDING) {
+  } else if (window_tag == rolling::window_tag::BOUNDED_CLOSED && order == order::DESCENDING) {
     return type_dispatcher(orderby.type(),
-                           rolling::range_window_clamper<rolling::window_type::BOUNDED_CLOSED,
-                                                         Direction,
+                           rolling::range_window_clamper<Direction,
+                                                         rolling::window_tag::BOUNDED_CLOSED,
                                                          order::DESCENDING>{},
                            orderby,
                            grouping,

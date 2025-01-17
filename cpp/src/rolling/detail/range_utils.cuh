@@ -49,7 +49,7 @@ using grouping_type = std::tuple<rmm::device_uvector<cudf::size_type> const&,
 /**
  * @brief Indicates behaviour of boundary of a rolling window.
  */
-enum class window_type : std::int8_t {
+enum class window_tag : std::int8_t {
   BOUNDED_OPEN,    ///< Window is bounded by a value-based endpoint, endpoint is excluded.
   BOUNDED_CLOSED,  ///< Window is bounded by a value-based endpoint, endpoint is included.
   UNBOUNDED,       ///< Window runs to beginning (or end) of the group the row is in.
@@ -147,24 +147,24 @@ struct grouped_with_nulls {
  * @brief Select the appropriate ordering comparator for the window type.
  * @tparam Type The type of the window.
  */
-template <window_type Type>
+template <window_tag Type>
 struct op_impl {
   using op     = void;
   using rev_op = void;
 };
 
 template <>
-struct op_impl<window_type::BOUNDED_CLOSED> {
+struct op_impl<window_tag::BOUNDED_CLOSED> {
   using op     = thrust::less<>;
   using rev_op = thrust::greater<>;
 };
 template <>
-struct op_impl<window_type::BOUNDED_OPEN> {
+struct op_impl<window_tag::BOUNDED_OPEN> {
   using op     = thrust::less_equal<>;
   using rev_op = thrust::greater_equal<>;
 };
 template <>
-struct op_impl<window_type::CURRENT_ROW> {
+struct op_impl<window_tag::CURRENT_ROW> {
   using op     = thrust::less<>;
   using rev_op = thrust::greater<>;
 };
@@ -174,7 +174,7 @@ struct op_impl<window_type::CURRENT_ROW> {
  * @tparam Type The type of the window
  * @tparam Order The sort order of the column used to define the windows.
  */
-template <window_type Type, order Order>
+template <window_tag Type, order Order>
 using op_t = std::conditional_t<Order == order::ASCENDING,
                                 typename op_impl<Type>::op,
                                 typename op_impl<Type>::rev_op>;
@@ -251,13 +251,13 @@ template <typename T, typename V>
  * @brief Functor to dispatch computation of clamped range-based
  * rolling window bounds.
  *
- * @tparam WindowType The type of window being computed
  * @tparam Direction The direction (preceding or following) of the
+ * @tparam WindowType The type of window being computed
  * window being computed.
  * @tparam Order The sort order of the orderby column defining the
  * window.
  */
-template <window_type WindowType, direction Direction, cudf::order Order>
+template <direction Direction, window_tag WindowType, cudf::order Order>
 struct range_window_clamper {
   /**
    * @brief Functor to compute distance from a given row to the edge
@@ -297,8 +297,7 @@ struct range_window_clamper {
     column_device_view::const_iterator<OrderbyT> end;
 
     /**
-     * @brief Compute the row defining the endpoint of the current
-     *  window
+     * @brief Compute the offset to the end of the window.
      *
      * @param i The current row index.
      * @return Offset to the current row's window endpoint.
@@ -310,14 +309,14 @@ struct range_window_clamper {
       auto const [null_count, group_start, group_end, null_start, null_end, start, end] =
         groups.row_info(i);
       if constexpr (Direction == direction::PRECEDING) {
-        if constexpr (WindowType == window_type::UNBOUNDED) { return i - group_start + 1; }
+        if constexpr (WindowType == window_tag::UNBOUNDED) { return i - group_start + 1; }
         if (Grouping::has_nulls && i >= null_start && i < null_end) { return i - null_start + 1; }
-        if constexpr (WindowType == window_type::CURRENT_ROW) {
+        if constexpr (WindowType == window_tag::CURRENT_ROW) {
           return 1 +
                  thrust::distance(
                    thrust::lower_bound(thrust::seq, begin + start, begin + i, *(begin + i), Comp{}),
                    begin + i);
-        } else if constexpr (WindowType != window_type::UNBOUNDED) {
+        } else if constexpr (WindowType != window_tag::UNBOUNDED) {
           return begin + i -
                  thrust::lower_bound(thrust::seq,
                                      begin + start,
@@ -329,14 +328,14 @@ struct range_window_clamper {
           CUDF_UNREACHABLE("Unexpected WindowType");
         }
       } else {
-        if constexpr (WindowType == window_type::UNBOUNDED) { return group_end - i - 1; }
+        if constexpr (WindowType == window_tag::UNBOUNDED) { return group_end - i - 1; }
         if (Grouping::has_nulls && i >= null_start && i < null_end) { return null_end - i - 1; }
-        if constexpr (WindowType == window_type::CURRENT_ROW) {
+        if constexpr (WindowType == window_tag::CURRENT_ROW) {
           return thrust::distance(
                    begin + i,
                    thrust::upper_bound(thrust::seq, begin + i, begin + end, *(begin + i), Comp{})) -
                  1;
-        } else if constexpr (WindowType != window_type::UNBOUNDED) {
+        } else if constexpr (WindowType != window_tag::UNBOUNDED) {
           return thrust::distance(begin + i,
                                   thrust::upper_bound(thrust::seq,
                                                       begin + start,
@@ -352,15 +351,18 @@ struct range_window_clamper {
   };
 
   /**
-   * @brief Compute the window bounds (possibly grouped) for an
-   * orderby column.
+   * @brief Compute the window bounds (possibly grouped) for an orderby column.
    *
-   * @tparam OrderbyT element type of the orderby column (dispatched
-   * on)
+   * @tparam OrderbyT element type of the orderby column (dispatched on)
    * @tparam ScalarT Concrete scalar type of the scalar row delta
-   * @tparam
+   * @param orderby Column used to define windows.
+   * @param grouping optional pre-processed group information.
+   * @param nulls_at_start If the orderby column contains nulls, are they are the start or the end?
+   * @param row_delta the delta applied to each row (may be null)
+   * @param stream CUDA stream used for kernel launches and memory allocations
+   * @param mr Memory resource used for memory allocations.
    */
-  template <typename OrderbyT, typename ScalarT>
+  template <typename OrderbyT, typename ScalarT = cudf::scalar_type_t<OrderbyT>>
   [[nodiscard]] std::unique_ptr<column> window_bounds(column_view const& orderby,
                                                       std::optional<grouping_type> const& grouping,
                                                       bool nulls_at_start,
@@ -413,11 +415,16 @@ struct range_window_clamper {
     return result;
   }
 
+  /**
+   * @brief Is the given type supported as an orderby column.
+   *
+   * @tparam The type of the elements of the orderby column.
+   */
   template <typename OrderbyT>
   static constexpr bool is_supported()
   {
     return (cuda::std::is_same_v<OrderbyT, cudf::string_view> &&
-            (WindowType == window_type::CURRENT_ROW || WindowType == window_type::UNBOUNDED)) ||
+            (WindowType == window_tag::CURRENT_ROW || WindowType == window_tag::UNBOUNDED)) ||
            cudf::is_numeric_not_bool<OrderbyT>() || cudf::is_timestamp<OrderbyT>() ||
            cudf::is_fixed_point<OrderbyT>();
   }
@@ -449,15 +456,13 @@ struct range_window_clamper {
                                                    rmm::cuda_stream_view stream,
                                                    rmm::device_async_resource_ref mr) const
   {
-    using ScalarT = cudf::scalar_type_t<OrderbyT>;
     CUDF_EXPECTS(!row_delta || cudf::have_same_types(orderby, *row_delta),
                  "Orderby column and row_delta must both be fixed point.",
                  cudf::data_type_error);
     CUDF_EXPECTS(!row_delta || row_delta->type().scale() == orderby.type().scale(),
                  "Orderby column and row_delta must have same fixed point scale.",
                  cudf::data_type_error);
-    return window_bounds<OrderbyT, ScalarT>(
-      orderby, grouping, nulls_at_start, row_delta, stream, mr);
+    return window_bounds<OrderbyT>(orderby, grouping, nulls_at_start, row_delta, stream, mr);
   }
 
   template <typename OrderbyT, CUDF_ENABLE_IF(cudf::is_numeric_not_bool<OrderbyT>())>
@@ -468,18 +473,16 @@ struct range_window_clamper {
                                                    rmm::cuda_stream_view stream,
                                                    rmm::device_async_resource_ref mr) const
   {
-    using ScalarT = cudf::scalar_type_t<OrderbyT>;
     CUDF_EXPECTS(!row_delta || cudf::have_same_types(orderby, *row_delta),
                  "Orderby column and row_delta must have the same type.",
                  cudf::data_type_error);
-    return window_bounds<OrderbyT, ScalarT>(
-      orderby, grouping, nulls_at_start, row_delta, stream, mr);
+    return window_bounds<OrderbyT>(orderby, grouping, nulls_at_start, row_delta, stream, mr);
   }
 
   template <typename OrderbyT,
             CUDF_ENABLE_IF(cuda::std::is_same_v<OrderbyT, cudf::string_view> &&
-                           (WindowType == window_type::CURRENT_ROW ||
-                            WindowType == window_type::UNBOUNDED))>
+                           (WindowType == window_tag::CURRENT_ROW ||
+                            WindowType == window_tag::UNBOUNDED))>
   [[nodiscard]] std::unique_ptr<column> operator()(column_view const& orderby,
                                                    std::optional<grouping_type> const& grouping,
                                                    bool nulls_at_start,
@@ -487,11 +490,9 @@ struct range_window_clamper {
                                                    rmm::cuda_stream_view stream,
                                                    rmm::device_async_resource_ref mr) const
   {
-    using ScalarT = cudf::scalar_type_t<OrderbyT>;
     CUDF_EXPECTS(!row_delta,
                  "Not expecting window range to have value for string-based window calculation");
-    return window_bounds<OrderbyT, ScalarT>(
-      orderby, grouping, nulls_at_start, row_delta, stream, mr);
+    return window_bounds<OrderbyT>(orderby, grouping, nulls_at_start, row_delta, stream, mr);
   }
 
   template <typename OrderbyT, CUDF_ENABLE_IF(!is_supported<OrderbyT>())>
