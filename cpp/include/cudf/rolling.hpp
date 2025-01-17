@@ -39,23 +39,21 @@ namespace CUDF_EXPORT cudf {
 /**
  * @brief Strongly typed wrapper for bounded closed rolling windows.
  *
- * @param delta Delta from current row.
- *
  * The endpoints of this window are included.
  */
 struct bounded_closed {
-  cudf::scalar const& delta;  ///< Delta from the current row in the window.
+  cudf::scalar const& delta;  ///< Delta from the current row in the window. Must be valid,
+                              ///< behaviour is undefined if not.
 };
 
 /**
  * @brief Strongly typed wrapper for bounded closed rolling windows.
  *
- * @param delta Delta from current row.
- *
  * The endpoints of this window are excluded.
  */
 struct bounded_open {
-  cudf::scalar const& delta;  ///< Delta from the current row in the window.
+  cudf::scalar const& delta;  ///< Delta from the current row in the window. Must be valid,
+                              ///< behaviour is undefined if not.
 };
 
 /**
