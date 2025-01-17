@@ -23,7 +23,11 @@
 #include <cudf/utilities/export.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 
+#include <rmm/resource_ref.hpp>
+
 #include <memory>
+#include <optional>
+#include <variant>
 
 namespace CUDF_EXPORT cudf {
 /**
@@ -32,6 +36,70 @@ namespace CUDF_EXPORT cudf {
  * @file
  */
 
+/**
+ * @brief Strongly typed wrapper for bounded closed rolling windows.
+ *
+ * @param delta Delta from current row.
+ *
+ * The endpoints of this window are included.
+ */
+struct bounded_closed {
+  cudf::scalar const& delta;  ///< Delta from the current row in the window.
+};
+
+/**
+ * @brief Strongly typed wrapper for bounded closed rolling windows.
+ *
+ * @param delta Delta from current row.
+ *
+ * The endpoints of this window are excluded.
+ */
+struct bounded_open {
+  cudf::scalar const& delta;  ///< Delta from the current row in the window.
+};
+
+/**
+ * @brief Strongly typed wrapper for unbounded rolling windows.
+ *
+ * This window runs to the begin/end of the current row's group.
+ */
+struct unbounded {};
+/**
+ * @brief Strongly typed wrapper for current_row rolling windows.
+ *
+ * This window contains all rows that are equal to the current row.
+ */
+struct current_row {};
+
+/**
+ * @brief The type of the range-based rolling window endpoint.
+ */
+using window_type = std::variant<unbounded, current_row, bounded_closed, bounded_open>;
+
+/**
+ * @brief Constructs preceding and following columns given window range specifications.
+ *
+ * @param group_keys Possibly empty table of sorted keys defining groups.
+ * @param orderby Column defining window ranges. Must be sorted. If `group_keys` is non-empty, must
+ * be sorted groupwise.
+ * @param order Sort order of the `orderby` column.
+ * @param null_order Null sort order in the sorted `orderby` column.
+ * @param preceding Type of the preceding window.
+ * @param following Type of the following window.
+ * @param stream CUDA stream used for device memory operations and kernel launches
+ * @param mr Device memory resource used to allocate the returned column's device memory
+ * @return pair of preceding and following columns that define the window bounds for each row,
+ * suitable for passing to `rolling_window`.
+ */
+std::pair<std::unique_ptr<column>, std::unique_ptr<column>> make_range_window_bounds(
+  table_view const& group_keys,
+  column_view const& orderby,
+  order order,
+  null_order null_order,
+  window_type preceding,
+  window_type following,
+  rmm::cuda_stream_view stream,
+  rmm::device_async_resource_ref mr);
 /**
  * @brief  Applies a fixed-size rolling window function to the values in a column.
  *
@@ -569,19 +637,6 @@ std::unique_ptr<column> grouped_range_rolling_window(
   range_window_bounds const& following,
   size_type min_periods,
   rolling_aggregation const& aggr,
-  rmm::cuda_stream_view stream      = cudf::get_default_stream(),
-  rmm::device_async_resource_ref mr = cudf::get_current_device_resource_ref());
-
-std::unique_ptr<column> grouped_range_rolling_window_v2(
-  table_view const& group_keys,
-  column_view const& orderby,
-  column_view const& values,
-  cudf::order order,
-  cudf::null_order null_order,
-  range_window_bounds const& preceding_window,
-  range_window_bounds const& following_window,
-  size_type min_periods,
-  rolling_aggregation const& agg,
   rmm::cuda_stream_view stream      = cudf::get_default_stream(),
   rmm::device_async_resource_ref mr = cudf::get_current_device_resource_ref());
 

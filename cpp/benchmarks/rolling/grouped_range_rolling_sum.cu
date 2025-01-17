@@ -22,9 +22,11 @@
 #include <cudf/column/column_factories.hpp>
 #include <cudf/rolling.hpp>
 #include <cudf/rolling/range_window_bounds.hpp>
+#include <cudf/scalar/scalar_factories.hpp>
 #include <cudf/sorting.hpp>
 #include <cudf/types.hpp>
 #include <cudf/utilities/default_stream.hpp>
+#include <cudf/utilities/memory_resource.hpp>
 #include <cudf/utilities/type_dispatcher.hpp>
 
 #include <rmm/device_buffer.hpp>
@@ -48,87 +50,7 @@ void bench_grouped_range_rolling_sum(nvbench::state& state)
   // Since orderby column is approximately equally spaced at 1s
   // intervals, this approximately controls the number of entries in
   // the window.
-  auto const preceding_range = cudf::duration_scalar<cudf::duration_ms>{
-    cudf::duration_ms{state.get_int64("preceding_range") * 1000}, true};
-  auto const following_range = cudf::duration_scalar<cudf::duration_ms>{
-    cudf::duration_ms{state.get_int64("following_range") * 1000}, true};
-  auto const has_nulls = static_cast<bool>(state.get_int64("has_nulls"));
-
-  auto vals = [&]() {
-    data_profile const profile = data_profile_builder().cardinality(0).no_validity().distribution(
-      cudf::type_to_id<std::int32_t>(), distribution_id::UNIFORM, 0, 100);
-    return create_random_column(cudf::type_to_id<std::int32_t>(), row_count{num_rows}, profile);
-  }();
-  auto const keys = [&] {
-    data_profile const profile =
-      data_profile_builder()
-        .cardinality(cardinality)
-        .no_validity()
-        .distribution(cudf::type_to_id<int32_t>(), distribution_id::UNIFORM, 0, num_rows);
-    auto keys = create_random_column(cudf::type_to_id<int32_t>(), row_count{num_rows}, profile);
-    return cudf::sort(cudf::table_view{{keys->view()}});
-  }();
-  auto orderby = [&]() {
-    auto seq =
-      cudf::make_timestamp_column(cudf::data_type{cudf::type_id::TIMESTAMP_MILLISECONDS}, num_rows);
-    // Equally spaced rows separated by 1s
-    thrust::transform(
-      rmm::exec_policy(cudf::get_default_stream()),
-      thrust::make_counting_iterator(static_cast<cudf::size_type>(0)),
-      thrust::make_counting_iterator(static_cast<cudf::size_type>(num_rows)),
-      seq->mutable_view().begin<cudf::timestamp_ms>(),
-      [] __device__(cudf::size_type i) {
-        return cudf::timestamp_ms{cudf::duration_ms{static_cast<std::int64_t>(i) * 1000}};
-      });
-    // Add some milliseconds of noise
-    data_profile profile = data_profile_builder().cardinality(0).distribution(
-      cudf::type_to_id<cudf::duration_ms>(), distribution_id::NORMAL, -2000, 2000);
-    profile.set_null_probability(has_nulls ? std::optional<double>{400.0 / num_rows}
-                                           : std::nullopt);
-    auto noise =
-      create_random_column(cudf::type_to_id<cudf::duration_ms>(), row_count{num_rows}, profile);
-    auto result =
-      cudf::binary_operation(seq->view(), noise->view(), cudf::binary_operator::ADD, seq->type());
-    auto columns = cudf::sort_by_key(cudf::table_view{{result->view()}},
-                                     cudf::table_view{{keys->get_column(0).view(), result->view()}},
-                                     {cudf::order::ASCENDING, cudf::order::ASCENDING},
-                                     {cudf::null_order::AFTER, cudf::null_order::AFTER})
-                     ->release();
-    return std::move(columns[0]);
-  }();
-
-  auto req = cudf::make_sum_aggregation<cudf::rolling_aggregation>();
-
-  auto const mem_stats_logger = cudf::memory_stats_logger();
-  state.set_cuda_stream(nvbench::make_cuda_stream_view(cudf::get_default_stream().value()));
-  state.exec(nvbench::exec_tag::sync, [&](nvbench::launch& launch) {
-    auto const result =
-      cudf::grouped_range_rolling_window(keys->view(),
-                                         orderby->view(),
-                                         cudf::order::ASCENDING,
-                                         vals->view(),
-                                         cudf::range_window_bounds::get(preceding_range),
-                                         cudf::range_window_bounds::get(following_range),
-                                         1,
-                                         *req);
-  });
-  auto const elapsed_time = state.get_summary("nv/cold/time/gpu/mean").get_float64("value");
-  state.add_element_count(static_cast<double>(num_rows) / elapsed_time / 1'000'000., "Mrows/s");
-  state.add_buffer_size(
-    mem_stats_logger.peak_memory_usage(), "peak_memory_usage", "peak_memory_usage");
-}
-
-void bench_grouped_range_rolling_sum_v2(nvbench::state& state)
-{
-  auto const num_rows    = static_cast<cudf::size_type>(state.get_int64("num_rows"));
-  auto const cardinality = static_cast<cudf::size_type>(state.get_int64("cardinality"));
-  // Configurable parameter is window range in seconds.
-  // Since orderby column is approximately equally spaced at 1s
-  // intervals, this approximately controls the number of entries in
-  // the window.
   auto const preceding_range = cudf::numeric_scalar<cudf::size_type>{
-    static_cast<cudf::size_type>(-state.get_int64("preceding_range") * 1000), true};
-  auto const preceding_two = cudf::numeric_scalar<cudf::size_type>{
     static_cast<cudf::size_type>(state.get_int64("preceding_range") * 1000), true};
   auto const following_range = cudf::numeric_scalar<cudf::size_type>{
     static_cast<cudf::size_type>(state.get_int64("preceding_range") * 1000), true};
@@ -180,24 +102,172 @@ void bench_grouped_range_rolling_sum_v2(nvbench::state& state)
   state.set_cuda_stream(nvbench::make_cuda_stream_view(cudf::get_default_stream().value()));
   state.exec(nvbench::exec_tag::sync, [&](nvbench::launch& launch) {
     auto const result =
-      cudf::grouped_range_rolling_window_v2(keys->view(),
-                                            orderby->view(),
-                                            vals->view(),
-                                            cudf::order::ASCENDING,
-                                            cudf::null_order::AFTER,
-                                            cudf::range_window_bounds::get(preceding_range),
-                                            cudf::range_window_bounds::get(following_range),
-                                            1,
-                                            *req);
-    auto const foo =
       cudf::grouped_range_rolling_window(keys->view(),
                                          orderby->view(),
                                          cudf::order::ASCENDING,
                                          vals->view(),
-                                         cudf::range_window_bounds::get(preceding_two),
+                                         cudf::range_window_bounds::get(preceding_range),
                                          cudf::range_window_bounds::get(following_range),
                                          1,
                                          *req);
+  });
+  auto const elapsed_time = state.get_summary("nv/cold/time/gpu/mean").get_float64("value");
+  state.add_element_count(static_cast<double>(num_rows) / elapsed_time / 1'000'000., "Mrows/s");
+  state.add_buffer_size(
+    mem_stats_logger.peak_memory_usage(), "peak_memory_usage", "peak_memory_usage");
+  // auto const num_rows    = static_cast<cudf::size_type>(state.get_int64("num_rows"));
+  // auto const cardinality = static_cast<cudf::size_type>(state.get_int64("cardinality"));
+  // // Configurable parameter is window range in seconds.
+  // // Since orderby column is approximately equally spaced at 1s
+  // // intervals, this approximately controls the number of entries in
+  // // the window.
+  // auto const preceding_range = cudf::duration_scalar<cudf::duration_ms>{
+  //   cudf::duration_ms{state.get_int64("preceding_range") * 1000}, true};
+  // auto const following_range = cudf::duration_scalar<cudf::duration_ms>{
+  //   cudf::duration_ms{state.get_int64("following_range") * 1000}, true};
+  // auto const has_nulls = static_cast<bool>(state.get_int64("has_nulls"));
+
+  // auto vals = [&]() {
+  //   data_profile const profile =
+  //   data_profile_builder().cardinality(0).no_validity().distribution(
+  //     cudf::type_to_id<std::int32_t>(), distribution_id::UNIFORM, 0, 100);
+  //   return create_random_column(cudf::type_to_id<std::int32_t>(), row_count{num_rows}, profile);
+  // }();
+  // auto const keys = [&] {
+  //   data_profile const profile =
+  //     data_profile_builder()
+  //       .cardinality(cardinality)
+  //       .no_validity()
+  //       .distribution(cudf::type_to_id<int32_t>(), distribution_id::UNIFORM, 0, num_rows);
+  //   auto keys = create_random_column(cudf::type_to_id<int32_t>(), row_count{num_rows}, profile);
+  //   return cudf::sort(cudf::table_view{{keys->view()}});
+  // }();
+  // auto orderby = [&]() {
+  //   auto seq =
+  //     cudf::make_timestamp_column(cudf::data_type{cudf::type_id::TIMESTAMP_MILLISECONDS},
+  //     num_rows);
+  //   // Equally spaced rows separated by 1s
+  //   thrust::transform(
+  //     rmm::exec_policy(cudf::get_default_stream()),
+  //     thrust::make_counting_iterator(static_cast<cudf::size_type>(0)),
+  //     thrust::make_counting_iterator(static_cast<cudf::size_type>(num_rows)),
+  //     seq->mutable_view().begin<cudf::timestamp_ms>(),
+  //     [] __device__(cudf::size_type i) {
+  //       return cudf::timestamp_ms{cudf::duration_ms{static_cast<std::int64_t>(i) * 1000}};
+  //     });
+  //   // Add some milliseconds of noise
+  //   data_profile profile = data_profile_builder().cardinality(0).distribution(
+  //     cudf::type_to_id<cudf::duration_ms>(), distribution_id::NORMAL, -2000, 2000);
+  //   profile.set_null_probability(has_nulls ? std::optional<double>{400.0 / num_rows}
+  //                                          : std::nullopt);
+  //   auto noise =
+  //     create_random_column(cudf::type_to_id<cudf::duration_ms>(), row_count{num_rows}, profile);
+  //   auto result =
+  //     cudf::binary_operation(seq->view(), noise->view(), cudf::binary_operator::ADD,
+  //     seq->type());
+  //   auto columns = cudf::sort_by_key(cudf::table_view{{result->view()}},
+  //                                    cudf::table_view{{keys->get_column(0).view(),
+  //                                    result->view()}}, {cudf::order::ASCENDING,
+  //                                    cudf::order::ASCENDING}, {cudf::null_order::AFTER,
+  //                                    cudf::null_order::AFTER})
+  //                    ->release();
+  //   return std::move(columns[0]);
+  // }();
+
+  // auto req = cudf::make_sum_aggregation<cudf::rolling_aggregation>();
+
+  // auto const mem_stats_logger = cudf::memory_stats_logger();
+  // state.set_cuda_stream(nvbench::make_cuda_stream_view(cudf::get_default_stream().value()));
+  // state.exec(nvbench::exec_tag::sync, [&](nvbench::launch& launch) {
+  //   auto const result =
+  //     cudf::grouped_range_rolling_window(keys->view(),
+  //                                        orderby->view(),
+  //                                        cudf::order::ASCENDING,
+  //                                        vals->view(),
+  //                                        cudf::range_window_bounds::get(preceding_range),
+  //                                        cudf::range_window_bounds::get(following_range),
+  //                                        1,
+  //                                        *req);
+  // });
+  // auto const elapsed_time = state.get_summary("nv/cold/time/gpu/mean").get_float64("value");
+  // state.add_element_count(static_cast<double>(num_rows) / elapsed_time / 1'000'000., "Mrows/s");
+  // state.add_buffer_size(
+  //   mem_stats_logger.peak_memory_usage(), "peak_memory_usage", "peak_memory_usage");
+}
+
+void bench_grouped_range_rolling_sum_v2(nvbench::state& state)
+{
+  auto const num_rows    = static_cast<cudf::size_type>(state.get_int64("num_rows"));
+  auto const cardinality = static_cast<cudf::size_type>(state.get_int64("cardinality"));
+  // Configurable parameter is window range in seconds.
+  // Since orderby column is approximately equally spaced at 1s
+  // intervals, this approximately controls the number of entries in
+  // the window.
+  auto preceding_range = cudf::make_numeric_scalar(cudf::data_type(cudf::type_id::INT32));
+  dynamic_cast<cudf::numeric_scalar<cudf::size_type>*>(preceding_range.get())
+    ->set_value(-state.get_int64("preceding_range") * 1000);
+
+  auto following_range = cudf::make_numeric_scalar(cudf::data_type(cudf::type_id::INT32));
+  dynamic_cast<cudf::numeric_scalar<cudf::size_type>*>(following_range.get())
+    ->set_value(state.get_int64("following_range") * 1000);
+  auto const has_nulls = static_cast<bool>(state.get_int64("has_nulls"));
+
+  auto vals = [&]() {
+    data_profile const profile = data_profile_builder().cardinality(0).no_validity().distribution(
+      cudf::type_to_id<std::int32_t>(), distribution_id::UNIFORM, 0, 100);
+    return create_random_column(cudf::type_to_id<std::int32_t>(), row_count{num_rows}, profile);
+  }();
+  auto const keys = [&] {
+    data_profile const profile =
+      data_profile_builder()
+        .cardinality(cardinality)
+        .no_validity()
+        .distribution(cudf::type_to_id<int32_t>(), distribution_id::UNIFORM, 0, num_rows);
+    auto keys = create_random_column(cudf::type_to_id<int32_t>(), row_count{num_rows}, profile);
+    return cudf::sort(cudf::table_view{{keys->view()}});
+  }();
+  auto orderby = [&]() {
+    auto seq = cudf::make_numeric_column(cudf::data_type{cudf::type_id::INT32}, num_rows);
+    // Equally spaced rows separated by 1s
+    thrust::transform(
+      rmm::exec_policy(cudf::get_default_stream()),
+      thrust::make_counting_iterator(static_cast<cudf::size_type>(0)),
+      thrust::make_counting_iterator(static_cast<cudf::size_type>(num_rows)),
+      seq->mutable_view().begin<cudf::size_type>(),
+      [] __device__(cudf::size_type i) { return static_cast<cudf::size_type>(i) * 1000; });
+    // Add some milliseconds of noise
+    data_profile profile = data_profile_builder().cardinality(0).distribution(
+      cudf::type_to_id<cudf::duration_ms>(), distribution_id::NORMAL, -2000, 2000);
+    profile.set_null_probability(has_nulls ? std::optional<double>{400.0 / num_rows}
+                                           : std::nullopt);
+    auto noise =
+      create_random_column(cudf::type_to_id<cudf::size_type>(), row_count{num_rows}, profile);
+    auto result =
+      cudf::binary_operation(seq->view(), noise->view(), cudf::binary_operator::ADD, seq->type());
+    auto columns = cudf::sort_by_key(cudf::table_view{{result->view()}},
+                                     cudf::table_view{{keys->get_column(0).view(), result->view()}},
+                                     {cudf::order::ASCENDING, cudf::order::ASCENDING},
+                                     {cudf::null_order::AFTER, cudf::null_order::AFTER})
+                     ->release();
+    return std::move(columns[0]);
+  }();
+
+  auto req = cudf::make_sum_aggregation<cudf::rolling_aggregation>();
+
+  auto const mem_stats_logger = cudf::memory_stats_logger();
+  state.set_cuda_stream(nvbench::make_cuda_stream_view(cudf::get_default_stream().value()));
+  state.exec(nvbench::exec_tag::sync, [&](nvbench::launch& launch) {
+    auto [preceding, following] =
+      cudf::make_range_window_bounds(keys->view(),
+                                     orderby->view(),
+                                     cudf::order::ASCENDING,
+                                     cudf::null_order::AFTER,
+                                     cudf::bounded_closed{*preceding_range},
+                                     cudf::bounded_closed{*following_range},
+                                     cudf::get_default_stream(),
+                                     cudf::get_current_device_resource_ref());
+    auto const result =
+      cudf::rolling_window(vals->view(), preceding->view(), following->view(), 1, *req);
   });
   auto const elapsed_time = state.get_summary("nv/cold/time/gpu/mean").get_float64("value");
   state.add_element_count(static_cast<double>(num_rows) / elapsed_time / 1'000'000., "Mrows/s");

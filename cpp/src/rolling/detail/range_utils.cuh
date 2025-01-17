@@ -22,7 +22,9 @@
 #include <cudf/column/column_factories.hpp>
 #include <cudf/detail/groupby/sort_helper.hpp>
 #include <cudf/detail/iterator.cuh>
+#include <cudf/rolling.hpp>
 #include <cudf/types.hpp>
+#include <cudf/utilities/error.hpp>
 #include <cudf/utilities/traits.hpp>
 #include <cudf/utilities/type_checks.hpp>
 #include <cudf/utilities/type_dispatcher.hpp>
@@ -40,6 +42,19 @@ namespace cudf {
 
 namespace detail::rolling {
 
+using grouping_type = std::tuple<rmm::device_uvector<cudf::size_type> const&,
+                                 rmm::device_uvector<cudf::size_type> const&,
+                                 rmm::device_uvector<cudf::size_type> const&>;
+
+/**
+ * @brief Indicates behaviour of boundary of a rolling window.
+ */
+enum class window_type : std::int8_t {
+  BOUNDED_OPEN,    ///< Window is bounded by a value-based endpoint, endpoint is excluded.
+  BOUNDED_CLOSED,  ///< Window is bounded by a value-based endpoint, endpoint is included.
+  UNBOUNDED,       ///< Window runs to beginning (or end) of the group the row is in.
+  CURRENT_ROW,     ///< Window contains all rows that compare equal to the current row.
+};
 /**
  * @brief A group descriptor for an ungrouped rolling window with nulls
  *
@@ -346,22 +361,19 @@ struct range_window_clamper {
    * @tparam
    */
   template <typename OrderbyT, typename ScalarT>
-  [[nodiscard]] std::unique_ptr<column> window_bounds(
-    column_view const& orderby,
-    std::optional<std::tuple<rmm::device_uvector<cudf::size_type> const&,
-                             rmm::device_uvector<cudf::size_type> const&,
-                             rmm::device_uvector<cudf::size_type> const&>> const& grouping,
-    bool nulls_at_start,
-    ScalarT const* row_delta,
-    rmm::cuda_stream_view stream,
-    rmm::device_async_resource_ref mr) const
+  [[nodiscard]] std::unique_ptr<column> window_bounds(column_view const& orderby,
+                                                      std::optional<grouping_type> const& grouping,
+                                                      bool nulls_at_start,
+                                                      scalar const* row_delta,
+                                                      rmm::cuda_stream_view stream,
+                                                      rmm::device_async_resource_ref mr) const
   {
     auto result = make_numeric_column(
       data_type(type_to_id<size_type>()), orderby.size(), mask_state::UNALLOCATED, stream, mr);
     auto d_orderby          = column_device_view::create(orderby, stream);
     auto d_begin            = d_orderby->begin<OrderbyT>();
     auto d_end              = d_orderby->end<OrderbyT>();
-    auto const* d_row_delta = row_delta ? row_delta->data() : nullptr;
+    auto const* d_row_delta = row_delta ? dynamic_cast<ScalarT const*>(row_delta)->data() : nullptr;
     using DeltaT = cuda::std::remove_cv_t<cuda::std::remove_pointer_t<decltype(d_row_delta)>>;
     auto copy_n  = [&](auto&& kernel) {
       thrust::copy_n(rmm::exec_policy_nosync(stream),
@@ -411,15 +423,12 @@ struct range_window_clamper {
   }
 
   template <typename OrderbyT, CUDF_ENABLE_IF(cudf::is_timestamp<OrderbyT>())>
-  [[nodiscard]] std::unique_ptr<column> operator()(
-    column_view const& orderby,
-    std::optional<std::tuple<rmm::device_uvector<cudf::size_type> const&,
-                             rmm::device_uvector<cudf::size_type> const&,
-                             rmm::device_uvector<cudf::size_type> const&>> const& grouping,
-    bool nulls_at_start,
-    scalar const* row_delta,
-    rmm::cuda_stream_view stream,
-    rmm::device_async_resource_ref mr) const
+  [[nodiscard]] std::unique_ptr<column> operator()(column_view const& orderby,
+                                                   std::optional<grouping_type> const& grouping,
+                                                   bool nulls_at_start,
+                                                   scalar const* row_delta,
+                                                   rmm::cuda_stream_view stream,
+                                                   rmm::device_async_resource_ref mr) const
   {
     using ScalarT = cudf::scalar_type_t<typename OrderbyT::duration>;
     CUDF_EXPECTS(!row_delta || cudf::is_duration(row_delta->type()),
@@ -429,19 +438,16 @@ struct range_window_clamper {
                  "Row delta must have same the resolution as orderby.",
                  cudf::data_type_error);
     return window_bounds<OrderbyT, ScalarT>(
-      orderby, grouping, nulls_at_start, dynamic_cast<ScalarT const*>(row_delta), stream, mr);
+      orderby, grouping, nulls_at_start, row_delta, stream, mr);
   }
 
   template <typename OrderbyT, CUDF_ENABLE_IF(cudf::is_fixed_point<OrderbyT>())>
-  [[nodiscard]] std::unique_ptr<column> operator()(
-    column_view const& orderby,
-    std::optional<std::tuple<rmm::device_uvector<cudf::size_type> const&,
-                             rmm::device_uvector<cudf::size_type> const&,
-                             rmm::device_uvector<cudf::size_type> const&>> const& grouping,
-    bool nulls_at_start,
-    scalar const* row_delta,
-    rmm::cuda_stream_view stream,
-    rmm::device_async_resource_ref mr) const
+  [[nodiscard]] std::unique_ptr<column> operator()(column_view const& orderby,
+                                                   std::optional<grouping_type> const& grouping,
+                                                   bool nulls_at_start,
+                                                   scalar const* row_delta,
+                                                   rmm::cuda_stream_view stream,
+                                                   rmm::device_async_resource_ref mr) const
   {
     using ScalarT = cudf::scalar_type_t<OrderbyT>;
     CUDF_EXPECTS(!row_delta || cudf::have_same_types(orderby, *row_delta),
@@ -451,57 +457,50 @@ struct range_window_clamper {
                  "Orderby column and row_delta must have same fixed point scale.",
                  cudf::data_type_error);
     return window_bounds<OrderbyT, ScalarT>(
-      orderby, grouping, nulls_at_start, dynamic_cast<ScalarT const*>(row_delta), stream, mr);
+      orderby, grouping, nulls_at_start, row_delta, stream, mr);
   }
 
   template <typename OrderbyT, CUDF_ENABLE_IF(cudf::is_numeric_not_bool<OrderbyT>())>
-  [[nodiscard]] std::unique_ptr<column> operator()(
-    column_view const& orderby,
-    std::optional<std::tuple<rmm::device_uvector<cudf::size_type> const&,
-                             rmm::device_uvector<cudf::size_type> const&,
-                             rmm::device_uvector<cudf::size_type> const&>> const& grouping,
-    bool nulls_at_start,
-    scalar const* row_delta,
-    rmm::cuda_stream_view stream,
-    rmm::device_async_resource_ref mr) const
+  [[nodiscard]] std::unique_ptr<column> operator()(column_view const& orderby,
+                                                   std::optional<grouping_type> const& grouping,
+                                                   bool nulls_at_start,
+                                                   scalar const* row_delta,
+                                                   rmm::cuda_stream_view stream,
+                                                   rmm::device_async_resource_ref mr) const
   {
     using ScalarT = cudf::scalar_type_t<OrderbyT>;
     CUDF_EXPECTS(!row_delta || cudf::have_same_types(orderby, *row_delta),
                  "Orderby column and row_delta must have the same type.",
                  cudf::data_type_error);
     return window_bounds<OrderbyT, ScalarT>(
-      orderby, grouping, nulls_at_start, dynamic_cast<ScalarT const*>(row_delta), stream, mr);
+      orderby, grouping, nulls_at_start, row_delta, stream, mr);
   }
 
   template <typename OrderbyT,
             CUDF_ENABLE_IF(cuda::std::is_same_v<OrderbyT, cudf::string_view> &&
                            (WindowType == window_type::CURRENT_ROW ||
                             WindowType == window_type::UNBOUNDED))>
-  [[nodiscard]] std::unique_ptr<column> operator()(
-    column_view const& orderby,
-    std::optional<std::tuple<rmm::device_uvector<cudf::size_type> const&,
-                             rmm::device_uvector<cudf::size_type> const&,
-                             rmm::device_uvector<cudf::size_type> const&>> const& grouping,
-    bool nulls_at_start,
-    scalar const* row_delta,
-    rmm::cuda_stream_view stream,
-    rmm::device_async_resource_ref mr) const
+  [[nodiscard]] std::unique_ptr<column> operator()(column_view const& orderby,
+                                                   std::optional<grouping_type> const& grouping,
+                                                   bool nulls_at_start,
+                                                   scalar const* row_delta,
+                                                   rmm::cuda_stream_view stream,
+                                                   rmm::device_async_resource_ref mr) const
   {
     using ScalarT = cudf::scalar_type_t<OrderbyT>;
+    CUDF_EXPECTS(!row_delta,
+                 "Not expecting window range to have value for string-based window calculation");
     return window_bounds<OrderbyT, ScalarT>(
-      orderby, grouping, nulls_at_start, dynamic_cast<ScalarT const*>(row_delta), stream, mr);
+      orderby, grouping, nulls_at_start, row_delta, stream, mr);
   }
 
   template <typename OrderbyT, CUDF_ENABLE_IF(!is_supported<OrderbyT>())>
-  std::unique_ptr<column> operator()(
-    column_view const&,
-    std::optional<std::tuple<rmm::device_uvector<cudf::size_type> const&,
-                             rmm::device_uvector<cudf::size_type> const&,
-                             rmm::device_uvector<cudf::size_type> const&>> const&,
-    bool,
-    scalar const*,
-    rmm::cuda_stream_view,
-    rmm::device_async_resource_ref) const
+  std::unique_ptr<column> operator()(column_view const&,
+                                     std::optional<grouping_type> const&,
+                                     bool,
+                                     scalar const*,
+                                     rmm::cuda_stream_view,
+                                     rmm::device_async_resource_ref) const
   {
     CUDF_FAIL("Unsupported rolling window type.", cudf::data_type_error);
   }

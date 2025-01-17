@@ -39,10 +39,19 @@
 #include <thrust/binary_search.h>
 
 #include <optional>
+#include <variant>
 
-namespace cudf {
+namespace CUDF_EXPORT cudf {
 namespace detail {
 
+namespace {
+template <class... Ts>
+struct match : Ts... {
+  using Ts::operator()...;
+};
+template <class... Ts>
+match(Ts...) -> match<Ts...>;
+}  // namespace
 /**
  * @brief Make a column representing the window offsets for a range-based window
  *
@@ -66,26 +75,38 @@ namespace detail {
  * @param mr Device memory resource used for allocations.
  */
 template <rolling::direction Direction>
-[[nodiscard]] std::unique_ptr<column> make_range_window_bounds(
+[[nodiscard]] std::unique_ptr<column> make_range_window_bound(
   column_view const& orderby,
-  std::optional<std::tuple<rmm::device_uvector<cudf::size_type> const&,
-                           rmm::device_uvector<cudf::size_type> const&,
-                           rmm::device_uvector<cudf::size_type> const&>> const& grouping,
+  std::optional<rolling::grouping_type> const& grouping,
   order order,
   null_order null_order,
-  scalar const* row_delta,
-  rolling::window_type window,
+  window_type window,
   rmm::cuda_stream_view stream,
   rmm::device_async_resource_ref mr)
 {
   CUDF_FUNC_RANGE();
-  CUDF_EXPECTS(window == rolling::window_type::UNBOUNDED ||
-                 window == rolling::window_type::CURRENT_ROW || row_delta != nullptr,
-               "For bounded windows, row_delta must be non-null.");
   bool const nulls_at_start = (order == order::ASCENDING && null_order == null_order::BEFORE) ||
                               (order == order::DESCENDING && null_order == null_order::AFTER);
 
-  if (window == rolling::window_type::UNBOUNDED && order == order::ASCENDING) {
+  using ret_t = std::pair<rolling::window_type, scalar const*>;
+  auto [window_tag, row_delta] =
+    std::visit(match{
+                 [](bounded_closed win) -> ret_t {
+                   return {rolling::window_type::BOUNDED_CLOSED, &win.delta};
+                 },
+                 [](bounded_open win) -> ret_t {
+                   return {rolling::window_type::BOUNDED_OPEN, &win.delta};
+                 },
+                 [](unbounded) -> ret_t {
+                   return {rolling::window_type::UNBOUNDED, nullptr};
+                 },
+                 [](current_row) -> ret_t {
+                   return {rolling::window_type::CURRENT_ROW, nullptr};
+                 },
+               },
+               window);
+
+  if (window_tag == rolling::window_type::UNBOUNDED && order == order::ASCENDING) {
     return type_dispatcher(
       orderby.type(),
       rolling::range_window_clamper<rolling::window_type::UNBOUNDED, Direction, order::ASCENDING>{},
@@ -95,7 +116,7 @@ template <rolling::direction Direction>
       row_delta,
       stream,
       mr);
-  } else if (window == rolling::window_type::UNBOUNDED && order == order::DESCENDING) {
+  } else if (window_tag == rolling::window_type::UNBOUNDED && order == order::DESCENDING) {
     return type_dispatcher(orderby.type(),
                            rolling::range_window_clamper<rolling::window_type::UNBOUNDED,
                                                          Direction,
@@ -106,7 +127,7 @@ template <rolling::direction Direction>
                            row_delta,
                            stream,
                            mr);
-  } else if (window == rolling::window_type::CURRENT_ROW && order == order::ASCENDING) {
+  } else if (window_tag == rolling::window_type::CURRENT_ROW && order == order::ASCENDING) {
     return type_dispatcher(orderby.type(),
                            rolling::range_window_clamper<rolling::window_type::CURRENT_ROW,
                                                          Direction,
@@ -117,7 +138,7 @@ template <rolling::direction Direction>
                            row_delta,
                            stream,
                            mr);
-  } else if (window == rolling::window_type::CURRENT_ROW && order == order::DESCENDING) {
+  } else if (window_tag == rolling::window_type::CURRENT_ROW && order == order::DESCENDING) {
     return type_dispatcher(orderby.type(),
                            rolling::range_window_clamper<rolling::window_type::CURRENT_ROW,
                                                          Direction,
@@ -128,7 +149,7 @@ template <rolling::direction Direction>
                            row_delta,
                            stream,
                            mr);
-  } else if (window == rolling::window_type::BOUNDED_OPEN && order == order::ASCENDING) {
+  } else if (window_tag == rolling::window_type::BOUNDED_OPEN && order == order::ASCENDING) {
     return type_dispatcher(orderby.type(),
                            rolling::range_window_clamper<rolling::window_type::BOUNDED_OPEN,
                                                          Direction,
@@ -139,7 +160,7 @@ template <rolling::direction Direction>
                            row_delta,
                            stream,
                            mr);
-  } else if (window == rolling::window_type::BOUNDED_OPEN && order == order::DESCENDING) {
+  } else if (window_tag == rolling::window_type::BOUNDED_OPEN && order == order::DESCENDING) {
     return type_dispatcher(orderby.type(),
                            rolling::range_window_clamper<rolling::window_type::BOUNDED_OPEN,
                                                          Direction,
@@ -150,7 +171,7 @@ template <rolling::direction Direction>
                            row_delta,
                            stream,
                            mr);
-  } else if (window == rolling::window_type::BOUNDED_CLOSED && order == order::ASCENDING) {
+  } else if (window_tag == rolling::window_type::BOUNDED_CLOSED && order == order::ASCENDING) {
     return type_dispatcher(orderby.type(),
                            rolling::range_window_clamper<rolling::window_type::BOUNDED_CLOSED,
                                                          Direction,
@@ -161,7 +182,7 @@ template <rolling::direction Direction>
                            row_delta,
                            stream,
                            mr);
-  } else if (window == rolling::window_type::BOUNDED_CLOSED && order == order::DESCENDING) {
+  } else if (window_tag == rolling::window_type::BOUNDED_CLOSED && order == order::DESCENDING) {
     return type_dispatcher(orderby.type(),
                            rolling::range_window_clamper<rolling::window_type::BOUNDED_CLOSED,
                                                          Direction,
@@ -220,68 +241,55 @@ template <rolling::direction Direction>
   return null_counts;
 }
 
+std::pair<std::unique_ptr<column>, std::unique_ptr<column>> make_range_window_bounds(
+  table_view const& group_keys,
+  column_view const& orderby,
+  order order,
+  null_order null_order,
+  window_type preceding,
+  window_type following,
+  rmm::cuda_stream_view stream,
+  rmm::device_async_resource_ref mr)
+{
+  auto make_preceding = [&](std::optional<detail::rolling::grouping_type> const& grouping) {
+    return make_range_window_bound<rolling::direction::PRECEDING>(
+      orderby, grouping, order, null_order, preceding, stream, mr);
+  };
+  auto make_following = [&](std::optional<detail::rolling::grouping_type> const& grouping) {
+    return make_range_window_bound<rolling::direction::FOLLOWING>(
+      orderby, grouping, order, null_order, following, stream, mr);
+  };
+
+  if (group_keys.num_columns() > 0) {
+    using sort_helper = cudf::groupby::detail::sort::sort_groupby_helper;
+    sort_helper helper{group_keys, null_policy::INCLUDE, sorted::YES, {}};
+    auto const& labels   = helper.group_labels(stream);
+    auto const& offsets  = helper.group_offsets(stream);
+    auto per_group_nulls = orderby.has_nulls() ? nulls_per_group(orderby, offsets, stream)
+                                               : rmm::device_uvector<size_type>{0, stream};
+    detail::rolling::grouping_type grouping = {labels, offsets, per_group_nulls};
+    return {make_preceding(grouping), make_following(grouping)};
+  } else {
+    return {make_preceding(std::nullopt), make_following(std::nullopt)};
+  }
+}
 }  // namespace detail
-std::unique_ptr<column> grouped_range_rolling_window_v2(table_view const& group_keys,
-                                                        column_view const& orderby,
-                                                        column_view const& values,
-                                                        cudf::order order,
-                                                        cudf::null_order null_order,
-                                                        range_window_bounds const& preceding_window,
-                                                        range_window_bounds const& following_window,
-                                                        size_type min_periods,
-                                                        rolling_aggregation const& agg,
-                                                        rmm::cuda_stream_view stream,
-                                                        rmm::device_async_resource_ref mr)
+
+std::pair<std::unique_ptr<column>, std::unique_ptr<column>> make_range_window_bounds(
+  table_view const& group_keys,
+  column_view const& orderby,
+  order order,
+  null_order null_order,
+  window_type preceding,
+  window_type following,
+  rmm::cuda_stream_view stream,
+  rmm::device_async_resource_ref mr)
 {
   CUDF_FUNC_RANGE();
-  auto make_preceding =
-    [&](std::optional<std::tuple<rmm::device_uvector<cudf::size_type> const&,
-                                 rmm::device_uvector<cudf::size_type> const&,
-                                 rmm::device_uvector<cudf::size_type> const&>> const& grouping) {
-      return detail::make_range_window_bounds<detail::rolling::direction::PRECEDING>(
-        orderby,
-        grouping,
-        order,
-        null_order,
-        &preceding_window.range_scalar(),
-        detail::rolling::window_type::BOUNDED_CLOSED,
-        stream,
-        mr);
-    };
-  auto make_following =
-    [&](std::optional<std::tuple<rmm::device_uvector<cudf::size_type> const&,
-                                 rmm::device_uvector<cudf::size_type> const&,
-                                 rmm::device_uvector<cudf::size_type> const&>> const& grouping) {
-      return detail::make_range_window_bounds<detail::rolling::direction::FOLLOWING>(
-        orderby,
-        grouping,
-        order,
-        null_order,
-        &following_window.range_scalar(),
-        detail::rolling::window_type::BOUNDED_CLOSED,
-        stream,
-        mr);
-    };
-  auto [preceding, following] = [&]() {
-    if (group_keys.num_columns() > 0) {
-      CUDF_EXPECTS(group_keys.num_rows() == orderby.size(),
-                   "Grouping table and orderby column must have same number of rows.");
-      using sort_helper = cudf::groupby::detail::sort::sort_groupby_helper;
-      sort_helper helper{group_keys, null_policy::INCLUDE, sorted::YES, {}};
-      auto const& labels   = helper.group_labels(stream);
-      auto const& offsets  = helper.group_offsets(stream);
-      auto nulls_per_group = orderby.has_nulls() ? detail::nulls_per_group(orderby, offsets, stream)
-                                                 : rmm::device_uvector<size_type>{0, stream};
-      std::tuple<rmm::device_uvector<cudf::size_type> const&,
-                 rmm::device_uvector<cudf::size_type> const&,
-                 rmm::device_uvector<cudf::size_type> const&>
-        grouping = {labels, offsets, nulls_per_group};
-      return std::pair{std::move(make_preceding(grouping)), std::move(make_following(grouping))};
-    } else {
-      return std::pair{std::move(make_preceding(std::nullopt)),
-                       std::move(make_following(std::nullopt))};
-    }
-  }();
-  return detail::rolling_window(values, preceding->view(), following->view(), 1, agg, stream, mr);
+  CUDF_EXPECTS(
+    group_keys.num_columns() == 0 || group_keys.num_rows() == orderby.size(),
+    "If a grouping table is provided, it must have same number of rows as the orderby column.");
+  return detail::make_range_window_bounds(
+    group_keys, orderby, order, null_order, preceding, following, stream, mr);
 }
-}  // namespace cudf
+}  // namespace CUDF_EXPORT cudf

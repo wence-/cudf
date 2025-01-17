@@ -92,13 +92,6 @@ enum class direction : bool {
   FOLLOWING,
 };
 
-enum class window_type : std::int8_t {
-  BOUNDED_OPEN,
-  BOUNDED_CLOSED,
-  UNBOUNDED,
-  CURRENT_ROW,
-};
-
 template <typename Grouping, direction Direction>
 struct fixed_window_clamper {
   Grouping groups;
