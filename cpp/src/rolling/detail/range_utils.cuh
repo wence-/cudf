@@ -18,6 +18,7 @@
 
 #include "rolling_utils.cuh"
 
+#include <cudf/column/column_device_view.cuh>
 #include <cudf/column/column_factories.hpp>
 #include <cudf/detail/groupby/sort_helper.hpp>
 #include <cudf/detail/iterator.cuh>
@@ -32,11 +33,157 @@
 
 #include <cub/device/device_segmented_reduce.cuh>
 #include <cuda/functional>
+#include <cuda/std/type_traits>
 #include <thrust/binary_search.h>
 
 namespace cudf {
 
 namespace detail::rolling {
+
+/**
+ * @brief A group descriptor for an ungrouped rolling window with nulls
+ *
+ * @param nulls_at_start Are the nulls at the start or end?
+ * @param num_rows The number of rows to be rolled over.
+ * @param null_count The number of nulls.
+ *
+ * @note This is used for uniformity of interface between grouped and ungrouped
+ * iterator construction.
+ */
+struct ungrouped_with_nulls {
+  bool nulls_at_start_;
+  cudf::size_type num_rows_;
+  cudf::size_type null_count_;
+
+  /**
+   * @copydoc ungrouped::row_info
+   */
+  [[nodiscard]] __device__ constexpr cuda::std::
+    tuple<size_type, size_type, size_type, size_type, size_type, size_type, size_type>
+    row_info(size_type i) const noexcept
+  {
+    if (nulls_at_start_) {
+      return {null_count_, 0, num_rows_, 0, null_count_, null_count_, num_rows_};
+    } else {
+      return {null_count_,
+              num_rows_,
+              null_count_,
+              num_rows_ - null_count_,
+              num_rows_,
+              0,
+              num_rows_ - null_count_};
+    }
+  }
+
+  /**
+   * @copydoc ungrouped::is_null
+   */
+  [[nodiscard]] __device__ constexpr bool is_null(cudf::size_type i,
+                                                  cudf::size_type null_count) const noexcept
+  {
+    return (nulls_at_start_ && i < null_count) || (!nulls_at_start_ && i >= num_rows_ - null_count);
+  }
+};
+
+/**
+ * @brief A group descriptor for a grouped rolling window with nulls
+ *
+ * @param nulls_at_start Are the nulls at the start of each group?
+ * @param labels The group labels, mapping from input rows to group.
+ * @param offsets The group offsets providing the endpoints of each group.
+ * @param null_counts The null counts per group.
+ * @param orderby The orderby column, sorted groupwise.
+ *
+ * @note This is used for uniformity of interface between grouped and ungrouped
+ * iterator construction.
+ */
+struct grouped_with_nulls {
+  bool nulls_at_start_;
+  cudf::size_type const* labels_;
+  cudf::size_type const* offsets_;
+  cudf::size_type const* null_counts_;
+  column_device_view const orderby_;
+
+  /*
+   * @brief Compute the number of nulls in each group.
+   *
+   * @param offsets Offset array defining the (sorted) groups.
+   * @param num_groups Number of groups.
+   * @param orderby device view of the orderby column which has nulls.
+   * @param stream CUDA stream used for kernel launches
+   * @return device_uvector of length @p num_groups containing the null count
+   * per group.
+   */
+  [[nodiscard]] static rmm::device_uvector<cudf::size_type> nulls_per_group(
+    cudf::size_type const* offsets,
+    std::size_t num_groups,
+    column_device_view const orderby,
+    rmm::cuda_stream_view stream)
+  {
+    std::size_t bytes{0};
+    auto is_null_it = cudf::detail::make_counting_transform_iterator(
+      cudf::size_type{0}, [orderby] __device__(size_type i) -> size_type {
+        return static_cast<size_type>(orderby.is_null_nocheck(i));
+      });
+    rmm::device_uvector<cudf::size_type> null_counts{num_groups, stream};
+    cub::DeviceSegmentedReduce::Sum(nullptr,
+                                    bytes,
+                                    is_null_it,
+                                    null_counts.begin(),
+                                    num_groups,
+                                    offsets,
+                                    offsets + 1,
+                                    stream.value());
+    auto tmp = rmm::device_buffer(bytes, stream);
+    cub::DeviceSegmentedReduce::Sum(tmp.data(),
+                                    bytes,
+                                    is_null_it,
+                                    null_counts.begin(),
+                                    num_groups,
+                                    offsets,
+                                    offsets + 1,
+                                    stream.value());
+    return null_counts;
+  }
+  /**
+   * @copydoc ungrouped::row_info
+   */
+  [[nodiscard]] __device__ constexpr cuda::std::
+    tuple<size_type, size_type, size_type, size_type, size_type, size_type, size_type>
+    row_info(size_type i) const noexcept
+  {
+    auto const label       = labels_[i];
+    auto const null_count  = null_counts_[label];
+    auto const group_start = offsets_[label];
+    auto const group_end   = offsets_[label + 1];
+    if (nulls_at_start_) {
+      return {null_count,
+              group_start,
+              group_end,
+              group_start,
+              group_start + null_count,
+              group_start + null_count,
+              group_end};
+    } else {
+      return {null_count,
+              group_start,
+              group_end,
+              group_end - null_count,
+              group_end,
+              group_start,
+              group_end - null_count};
+    }
+  }
+
+  /**
+   * @copydoc ungrouped::is_null
+   */
+  [[nodiscard]] __device__ bool is_null(cudf::size_type i,
+                                        [[maybe_unused]] cudf::size_type null_count) const noexcept
+  {
+    return orderby_.is_null_nocheck(i);
+  }
+};
 
 /**
  * @brief Select the appropriate ordering comparator for the window type.
@@ -117,16 +264,15 @@ template <typename T, typename V>
       // numeric_limits::lowest()/max()?
       return x + y;
     } else if constexpr (cuda::std::is_signed_v<T>) {
-      return x + y;
-      // using U  = cuda::std::make_unsigned_t<T>;
-      // U ux     = static_cast<U>(x);
-      // U uy     = static_cast<U>(y);
-      // U result = ux + uy;
-      // ux       = (ux >> cuda::std::numeric_limits<T>::digits) +
-      //      static_cast<U>(cuda::std::numeric_limits<T>::max());
-      // // Note: this cast is implementation defined (until C++20) but all
-      // // the platforms we care about do the twos-complement thing.
-      // return static_cast<T>((ux ^ uy) | ~(uy ^ result)) >= 0 ? ux : result;
+      using U  = cuda::std::make_unsigned_t<T>;
+      U ux     = static_cast<U>(x);
+      U uy     = static_cast<U>(y);
+      U result = ux + uy;
+      ux       = (ux >> cuda::std::numeric_limits<T>::digits) +
+           static_cast<U>(cuda::std::numeric_limits<T>::max());
+      // Note: this cast is implementation defined (until C++20) but all
+      // the platforms we care about do the twos-complement thing.
+      return static_cast<T>((ux ^ uy) | ~(uy ^ result)) >= 0 ? ux : result;
     } else if constexpr (cuda::std::is_unsigned_v<T>) {
       T result = x + y;
       // Only way we can overflow is in the positive direction
@@ -176,6 +322,293 @@ struct range_window_clamper {
   template <typename Grouping, typename OrderbyT, typename DeltaT>
   struct distance_kernel {
     Grouping groups;
+    static_assert(cuda::std::disjunction<cuda::std::is_same<Grouping, ungrouped>,
+                                         cuda::std::is_same<Grouping, grouped>,
+                                         cuda::std::is_same<Grouping, ungrouped_with_nulls>,
+                                         cuda::std::is_same<Grouping, grouped_with_nulls>>(),
+                  "Invalid grouping descriptor");
+    // Delta from current row that defines the interval endpoint.
+    // The endpoint is always current_row_value + row_delta, saturated
+    // at the datatype bounds.
+    // Note that these are always value-wise, so if you have a
+    // descending ordered column you often want row_delta to be
+    // negative for the following window.
+    // This pointer may be null for UNBOUNDED and CURRENT_ROW windows.
+    DeltaT const* row_delta;
+    column_device_view::const_iterator<OrderbyT> begin;
+    column_device_view::const_iterator<OrderbyT> end;
+
+    /**
+     * @brief Compute the row defining the endpoint of the current
+     *  window
+     *
+     * @param i The current row index.
+     * @return Offset to the current row's window endpoint.
+     */
+    [[nodiscard]] __device__ size_type operator()(size_type i) const
+    {
+      using Comp      = op_t<WindowType, Order>;
+      auto const info = groups.row_info(i);
+      auto const [null_count, group_start, group_end, null_start, null_end, start, end] =
+        groups.row_info(i);
+      if constexpr (Direction == direction::PRECEDING) {
+        if constexpr (WindowType == window_type::UNBOUNDED) { return i - group_start + 1; }
+        if (groups.is_null(i, null_count)) { return i - null_start + 1; }
+        if constexpr (WindowType == window_type::CURRENT_ROW) {
+          return 1 +
+                 thrust::distance(
+                   thrust::lower_bound(thrust::seq, begin + start, begin + i, *(begin + i), Comp{}),
+                   begin + i);
+        } else if constexpr (WindowType != window_type::UNBOUNDED) {
+          return begin + i -
+                 thrust::lower_bound(thrust::seq,
+                                     begin + start,
+                                     begin + end,
+                                     add_sat(*(begin + i), *row_delta),
+                                     Comp{}) +
+                 1;
+        } else {
+          CUDF_UNREACHABLE("Unexpected WindowType");
+        }
+      } else {
+        if constexpr (WindowType == window_type::UNBOUNDED) { return group_end - i - 1; }
+        if (groups.is_null(i, null_count)) { return null_end - i - 1; }
+        if constexpr (WindowType == window_type::CURRENT_ROW) {
+          return thrust::distance(
+                   begin + i,
+                   thrust::upper_bound(thrust::seq, begin + i, begin + end, *(begin + i), Comp{})) -
+                 1;
+        } else if constexpr (WindowType != window_type::UNBOUNDED) {
+          return thrust::distance(begin + i,
+                                  thrust::upper_bound(thrust::seq,
+                                                      begin + start,
+                                                      begin + end,
+                                                      add_sat(*(begin + i), *row_delta),
+                                                      Comp{})) -
+                 1;
+        } else {
+          CUDF_UNREACHABLE("Unexpected WindowType");
+        }
+      }
+    }
+  };
+
+  /**
+   * @brief Compute the window bounds (possibly grouped) for an
+   * orderby column.
+   *
+   * @tparam OrderbyT element type of the orderby column (dispatched
+   * on)
+   * @tparam ScalarT Concrete scalar type of the scalar row delta
+   * @tparam
+   */
+  template <typename OrderbyT, typename ScalarT>
+  [[nodiscard]] std::unique_ptr<column> window_bounds(
+    column_view const& orderby,
+    std::optional<std::pair<rmm::device_uvector<cudf::size_type> const&,
+                            rmm::device_uvector<cudf::size_type> const&>> const& grouping,
+    bool nulls_at_start,
+    ScalarT const* row_delta,
+    rmm::cuda_stream_view stream,
+    rmm::device_async_resource_ref mr) const
+  {
+    auto result = make_numeric_column(
+      data_type(type_to_id<size_type>()), orderby.size(), mask_state::UNALLOCATED, stream, mr);
+    auto d_orderby          = column_device_view::create(orderby, stream);
+    auto d_begin            = d_orderby->begin<OrderbyT>();
+    auto d_end              = d_orderby->end<OrderbyT>();
+    auto const* d_row_delta = row_delta ? row_delta->data() : nullptr;
+    using DeltaT = cuda::std::remove_cv_t<cuda::std::remove_pointer_t<decltype(d_row_delta)>>;
+    auto copy_n  = [&](auto&& kernel) {
+      thrust::copy_n(rmm::exec_policy_nosync(stream),
+                     cudf::detail::make_counting_transform_iterator(0, kernel),
+                     orderby.size(),
+                     result->mutable_view().begin<size_type>());
+    };
+    if (!grouping.has_value()) {
+      if (orderby.has_nulls()) {
+        copy_n(distance_kernel<ungrouped_with_nulls, OrderbyT, DeltaT>{
+          ungrouped_with_nulls{nulls_at_start, orderby.size(), orderby.null_count()},
+          d_row_delta,
+          d_begin,
+          d_end});
+      } else {
+        copy_n(distance_kernel<ungrouped, OrderbyT, DeltaT>{
+          ungrouped{orderby.size()}, d_row_delta, d_begin, d_end});
+      }
+    } else {
+      auto [labels, offsets] = grouping.value();
+      if (orderby.has_nulls()) {
+        auto nulls_per_group = grouped_with_nulls::nulls_per_group(
+          offsets.data(), offsets.size() - 1, *d_orderby, stream);
+        copy_n(distance_kernel<grouped_with_nulls, OrderbyT, DeltaT>{grouped_with_nulls{
+                                                                       nulls_at_start,
+                                                                       labels.data(),
+                                                                       offsets.data(),
+                                                                       nulls_per_group.data(),
+                                                                       *d_orderby,
+                                                                     },
+                                                                     d_row_delta,
+                                                                     d_begin,
+                                                                     d_end});
+      } else {
+        copy_n(distance_kernel<grouped, OrderbyT, DeltaT>{
+          grouped{labels.data(), offsets.data()}, d_row_delta, d_begin, d_end});
+      }
+    }
+    stream.synchronize();
+    return result;
+  }
+
+  template <typename T>
+  static constexpr bool is_supported()
+  {
+    return cuda::std::is_same_v<T, cudf::size_type>;
+  }
+
+  // template <typename OrderbyT,
+  // CUDF_ENABLE_IF(cudf::is_timestamp<OrderbyT>())>
+  // [[nodiscard]] std::unique_ptr<column>
+  // operator()(column_view const &orderby,
+  //            std::optional<
+  //                std::pair<rmm::device_uvector<cudf::size_type> const &,
+  //                          rmm::device_uvector<cudf::size_type> const &>>
+  //                          const
+  //                &grouping,
+  //            bool nulls_at_start, scalar const *row_delta,
+  //            rmm::cuda_stream_view stream,
+  //            rmm::device_async_resource_ref mr) const {
+  //   using ScalarT = cudf::scalar_type_t<typename OrderbyT::duration>;
+  //   CUDF_EXPECTS(!row_delta || cudf::is_duration(row_delta->type()),
+  //                "Row delta must be a duration type.",
+  //                cudf::data_type_error);
+  //   CUDF_EXPECTS(!row_delta || row_delta->type().id() ==
+  //                                  type_to_id<typename OrderbyT::duration>(),
+  //                "Row delta must have same the resolution as orderby.",
+  //                cudf::data_type_error);
+  //   return window_bounds<OrderbyT, ScalarT>(
+  //       orderby, grouping, nulls_at_start,
+  //       dynamic_cast<ScalarT const *>(row_delta), stream, mr);
+  // }
+
+  // template <typename OrderbyT,
+  // CUDF_ENABLE_IF(cudf::is_fixed_point<OrderbyT>())>
+  // [[nodiscard]] std::unique_ptr<column>
+  // operator()(column_view const &orderby,
+  //            std::optional<
+  //                std::pair<rmm::device_uvector<cudf::size_type> const &,
+  //                          rmm::device_uvector<cudf::size_type> const &>>
+  //                          const
+  //                &grouping,
+  //            bool nulls_at_start, scalar const *row_delta,
+  //            rmm::cuda_stream_view stream,
+  //            rmm::device_async_resource_ref mr) const {
+  //   using ScalarT = cudf::scalar_type_t<OrderbyT>;
+  //   CUDF_EXPECTS(!row_delta || cudf::have_same_types(orderby, *row_delta),
+  //                "Orderby column and row_delta must both be fixed point.",
+  //                cudf::data_type_error);
+  //   CUDF_EXPECTS(
+  //       !row_delta || row_delta->type().scale() == orderby.type().scale(),
+  //       "Orderby column and row_delta must have same fixed point scale.",
+  //       cudf::data_type_error);
+  //   return window_bounds<OrderbyT, ScalarT>(
+  //       orderby, grouping, nulls_at_start,
+  //       dynamic_cast<ScalarT const *>(row_delta), stream, mr);
+  // }
+
+  template <typename OrderbyT, CUDF_ENABLE_IF(cuda::std::is_same_v<OrderbyT, cudf::size_type>)>
+  [[nodiscard]] std::unique_ptr<column> operator()(
+    column_view const& orderby,
+    std::optional<std::pair<rmm::device_uvector<cudf::size_type> const&,
+                            rmm::device_uvector<cudf::size_type> const&>> const& grouping,
+    bool nulls_at_start,
+    scalar const* row_delta,
+    rmm::cuda_stream_view stream,
+    rmm::device_async_resource_ref mr) const
+  {
+    using ScalarT = cudf::scalar_type_t<OrderbyT>;
+    CUDF_EXPECTS(!row_delta || cudf::have_same_types(orderby, *row_delta),
+                 "Orderby column and row_delta must have the same type.",
+                 cudf::data_type_error);
+    return window_bounds<OrderbyT, ScalarT>(
+      orderby, grouping, nulls_at_start, dynamic_cast<ScalarT const*>(row_delta), stream, mr);
+  }
+
+  // template <typename OrderbyT,
+  //           CUDF_ENABLE_IF(cuda::std::is_same_v<OrderbyT,
+  //           cudf::string_view>)>
+  // [[nodiscard]] std::unique_ptr<column>
+  // operator()(column_view const &orderby,
+  //            std::optional<
+  //                std::pair<rmm::device_uvector<cudf::size_type> const &,
+  //                          rmm::device_uvector<cudf::size_type> const &>>
+  //                          const
+  //                &grouping,
+  //            bool nulls_at_start, scalar const *row_delta,
+  //            rmm::cuda_stream_view stream,
+  //            rmm::device_async_resource_ref mr) const {
+  //   using ScalarT = cudf::scalar_type_t<OrderbyT>;
+  //   if constexpr (WindowType == window_type::CURRENT_ROW ||
+  //                 WindowType == window_type::UNBOUNDED) {
+  //     return window_bounds<OrderbyT, ScalarT>(
+  //         orderby, grouping, nulls_at_start,
+  //         dynamic_cast<ScalarT const *>(row_delta), stream, mr);
+  //   } else {
+  //     CUDF_FAIL("Range windows for strings only support UNBOUNDED and "
+  //               "CURRENT_ROW windows.");
+  //   }
+  // }
+
+  template <typename OrderbyT, CUDF_ENABLE_IF(!is_supported<OrderbyT>())>
+  std::unique_ptr<column> operator()(
+    column_view const&,
+    std::optional<std::pair<rmm::device_uvector<cudf::size_type> const&,
+                            rmm::device_uvector<cudf::size_type> const&>> const&,
+    bool,
+    scalar const*,
+    rmm::cuda_stream_view,
+    rmm::device_async_resource_ref) const
+  {
+    CUDF_FAIL("Unsupported rolling window type.", cudf::data_type_error);
+  }
+} /**
+   * @brief Functor to dispatch computation of clamped range-based
+   * rolling window bounds.
+   *
+   * @tparam WindowType The type of window being computed
+   * @tparam Direction The direction (preceding or following) of the
+   * window being computed.
+   * @tparam Order The sort order of the orderby column defining the
+   * window.
+   */
+template <window_type WindowType, direction Direction, cudf::order Order>
+struct range_window_clamper {
+  /**
+   * @brief Functor to compute distance from a given row to the edge
+   * of the window.
+   *
+   * @tparam Grouping Object defining how the orderby column is
+   * grouped.
+   * @tparam OrderbyT Type of elements in the orderby columns.
+   * @tparam DeltaT Type of the elements in the scalar delta (returned
+   * by scalar.data()).
+   * @param groups The grouping object.
+   * @param row_delta Pointer to row delta on device.
+   * @param begin Iterator to begin of orderby column on device.
+   * @param end Iterator to end of orderby column on device.
+   *
+   * @note If the window is a bounded one, then the endpoint of the
+   * window is always computed by ADDING the given @p row_delta to the
+   * current row value (saturating at the data type bounds).
+   */
+  template <typename Grouping, typename OrderbyT, typename DeltaT>
+  struct distance_kernel {
+    Grouping groups;
+    static_assert(cuda::std::disjunction<cuda::std::is_same<Grouping, ungrouped>,
+                                         cuda::std::is_same<Grouping, grouped>,
+                                         cuda::std::is_same<Grouping, ungrouped_with_nulls>,
+                                         cuda::std::is_same<Grouping, grouped_with_nulls>>(),
+                  "Invalid grouping descriptor");
     // Delta from current row that defines the interval endpoint.
     // The endpoint is always current_row_value + row_delta, saturated
     // at the datatype bounds.
