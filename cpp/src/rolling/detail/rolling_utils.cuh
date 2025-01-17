@@ -228,10 +228,10 @@ struct grouped_with_nulls : nulls_mixin {
   cudf::size_type const* labels_;
   cudf::size_type const* offsets_;
   cudf::size_type const* null_counts_;
-  column_device_view const& orderby_;
+  column_device_view const orderby_;
 
   struct is_null_kernel {
-    column_device_view const& orderby_;
+    column_device_view const orderby_;
     [[nodiscard]] __device__ cudf::size_type operator()(cudf::size_type i) const noexcept
     {
       return static_cast<cudf::size_type>(orderby_.is_null_nocheck(i));
@@ -241,7 +241,7 @@ struct grouped_with_nulls : nulls_mixin {
   [[nodiscard]] static rmm::device_uvector<cudf::size_type> nulls_per_group(
     std::size_t num_groups,
     cudf::size_type const* offsets,
-    column_device_view const& orderby,
+    column_device_view const orderby,
     rmm::cuda_stream_view stream)
   {
     std::size_t bytes{0};
