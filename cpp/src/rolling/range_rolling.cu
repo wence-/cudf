@@ -24,6 +24,7 @@
 #include <cudf/detail/groupby/sort_helper.hpp>
 #include <cudf/detail/iterator.cuh>
 #include <cudf/detail/nvtx/ranges.hpp>
+#include <cudf/reduction.hpp>
 #include <cudf/rolling.hpp>
 #include <cudf/rolling/range_window_bounds.hpp>
 #include <cudf/types.hpp>
@@ -65,7 +66,7 @@ namespace detail {
  * @param mr Device memory resource used for allocations.
  */
 template <rolling::direction Direction>
-[[nodiscard]] std::unique_ptr<column> inline make_range_window_bounds(
+[[nodiscard]] std::unique_ptr<column> make_range_window_bounds(
   column_view const& orderby,
   std::optional<std::pair<rmm::device_uvector<cudf::size_type> const&,
                           rmm::device_uvector<cudf::size_type> const&>> const& grouping,
@@ -234,6 +235,10 @@ std::unique_ptr<column> grouped_range_rolling_window_v2(table_view const& group_
                        std::move(make_following(std::nullopt))};
     }
   }();
+  auto maxagg = cudf::reduce(
+    preceding->view(), *cudf::make_max_aggregation<cudf::reduce_aggregation>(), preceding->type());
+  auto val = dynamic_cast<cudf::numeric_scalar<cudf::size_type>*>(maxagg.get())->value();
+  std::cout << "maxval " << val << std::endl;
   return detail::rolling_window(values, preceding->view(), following->view(), 1, agg, stream, mr);
 }
 }  // namespace cudf
