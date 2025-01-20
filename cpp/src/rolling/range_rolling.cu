@@ -91,110 +91,51 @@ template <rolling::direction Direction>
   bool const nulls_at_start = (order == order::ASCENDING && null_order == null_order::BEFORE) ||
                               (order == order::DESCENDING && null_order == null_order::AFTER);
 
-  using ret_t = std::pair<rolling::window_tag, scalar const*>;
-  auto [window_tag, row_delta] =
-    std::visit(match{
-                 [](bounded_closed win) -> ret_t {
-                   return {rolling::window_tag::BOUNDED_CLOSED, &win.delta};
-                 },
-                 [](bounded_open win) -> ret_t {
-                   return {rolling::window_tag::BOUNDED_OPEN, &win.delta};
-                 },
-                 [](unbounded) -> ret_t {
-                   return {rolling::window_tag::UNBOUNDED, nullptr};
-                 },
-                 [](current_row) -> ret_t {
-                   return {rolling::window_tag::CURRENT_ROW, nullptr};
-                 },
-               },
-               window);
+  using ret_t           = std::pair<rolling::window_tag, scalar const*>;
+  using tag_t           = rolling::window_tag;
+  auto [tag, row_delta] = std::visit(match{
+                                       [](bounded_closed win) -> ret_t {
+                                         return {tag_t::BOUNDED_CLOSED, &win.delta};
+                                       },
+                                       [](bounded_open win) -> ret_t {
+                                         return {tag_t::BOUNDED_OPEN, &win.delta};
+                                       },
+                                       [](unbounded) -> ret_t {
+                                         return {tag_t::UNBOUNDED, nullptr};
+                                       },
+                                       [](current_row) -> ret_t {
+                                         return {tag_t::CURRENT_ROW, nullptr};
+                                       },
+                                     },
+                                     window);
 
-  if (window_tag == rolling::window_tag::UNBOUNDED && order == order::ASCENDING) {
+  auto dispatch = [&, row_delta = row_delta](auto&& clamper) {
     return type_dispatcher(
-      orderby.type(),
-      rolling::range_window_clamper<Direction, rolling::window_tag::UNBOUNDED, order::ASCENDING>{},
-      orderby,
-      grouping,
-      nulls_at_start,
-      row_delta,
-      stream,
-      mr);
-  } else if (window_tag == rolling::window_tag::UNBOUNDED && order == order::DESCENDING) {
-    return type_dispatcher(
-      orderby.type(),
-      rolling::range_window_clamper<Direction, rolling::window_tag::UNBOUNDED, order::DESCENDING>{},
-      orderby,
-      grouping,
-      nulls_at_start,
-      row_delta,
-      stream,
-      mr);
-  } else if (window_tag == rolling::window_tag::CURRENT_ROW && order == order::ASCENDING) {
-    return type_dispatcher(orderby.type(),
-                           rolling::range_window_clamper<Direction,
-                                                         rolling::window_tag::CURRENT_ROW,
-                                                         order::ASCENDING>{},
-                           orderby,
-                           grouping,
-                           nulls_at_start,
-                           row_delta,
-                           stream,
-                           mr);
-  } else if (window_tag == rolling::window_tag::CURRENT_ROW && order == order::DESCENDING) {
-    return type_dispatcher(orderby.type(),
-                           rolling::range_window_clamper<Direction,
-                                                         rolling::window_tag::CURRENT_ROW,
-                                                         order::DESCENDING>{},
-                           orderby,
-                           grouping,
-                           nulls_at_start,
-                           row_delta,
-                           stream,
-                           mr);
-  } else if (window_tag == rolling::window_tag::BOUNDED_OPEN && order == order::ASCENDING) {
-    return type_dispatcher(orderby.type(),
-                           rolling::range_window_clamper<Direction,
-                                                         rolling::window_tag::BOUNDED_OPEN,
-                                                         order::ASCENDING>{},
-                           orderby,
-                           grouping,
-                           nulls_at_start,
-                           row_delta,
-                           stream,
-                           mr);
-  } else if (window_tag == rolling::window_tag::BOUNDED_OPEN && order == order::DESCENDING) {
-    return type_dispatcher(orderby.type(),
-                           rolling::range_window_clamper<Direction,
-                                                         rolling::window_tag::BOUNDED_OPEN,
-                                                         order::DESCENDING>{},
-                           orderby,
-                           grouping,
-                           nulls_at_start,
-                           row_delta,
-                           stream,
-                           mr);
-  } else if (window_tag == rolling::window_tag::BOUNDED_CLOSED && order == order::ASCENDING) {
-    return type_dispatcher(orderby.type(),
-                           rolling::range_window_clamper<Direction,
-                                                         rolling::window_tag::BOUNDED_CLOSED,
-                                                         order::ASCENDING>{},
-                           orderby,
-                           grouping,
-                           nulls_at_start,
-                           row_delta,
-                           stream,
-                           mr);
-  } else if (window_tag == rolling::window_tag::BOUNDED_CLOSED && order == order::DESCENDING) {
-    return type_dispatcher(orderby.type(),
-                           rolling::range_window_clamper<Direction,
-                                                         rolling::window_tag::BOUNDED_CLOSED,
-                                                         order::DESCENDING>{},
-                           orderby,
-                           grouping,
-                           nulls_at_start,
-                           row_delta,
-                           stream,
-                           mr);
+      orderby.type(), clamper, orderby, grouping, nulls_at_start, row_delta, stream, mr);
+  };
+  if (tag == tag_t::UNBOUNDED && order == order::ASCENDING) {
+    return dispatch(rolling::range_window_clamper<Direction, tag_t::UNBOUNDED, order::ASCENDING>{});
+  } else if (tag == tag_t::UNBOUNDED && order == order::DESCENDING) {
+    return dispatch(
+      rolling::range_window_clamper<Direction, tag_t::UNBOUNDED, order::DESCENDING>{});
+  } else if (tag == tag_t::CURRENT_ROW && order == order::ASCENDING) {
+    return dispatch(
+      rolling::range_window_clamper<Direction, tag_t::CURRENT_ROW, order::ASCENDING>{});
+  } else if (tag == tag_t::CURRENT_ROW && order == order::DESCENDING) {
+    return dispatch(
+      rolling::range_window_clamper<Direction, tag_t::CURRENT_ROW, order::DESCENDING>{});
+  } else if (tag == tag_t::BOUNDED_OPEN && order == order::ASCENDING) {
+    return dispatch(
+      rolling::range_window_clamper<Direction, tag_t::BOUNDED_OPEN, order::ASCENDING>{});
+  } else if (tag == tag_t::BOUNDED_OPEN && order == order::DESCENDING) {
+    return dispatch(
+      rolling::range_window_clamper<Direction, tag_t::BOUNDED_OPEN, order::DESCENDING>{});
+  } else if (tag == tag_t::BOUNDED_CLOSED && order == order::ASCENDING) {
+    return dispatch(
+      rolling::range_window_clamper<Direction, tag_t::BOUNDED_CLOSED, order::ASCENDING>{});
+  } else if (tag == tag_t::BOUNDED_CLOSED && order == order::DESCENDING) {
+    return dispatch(
+      rolling::range_window_clamper<Direction, tag_t::BOUNDED_CLOSED, order::DESCENDING>{});
   } else {
     CUDF_FAIL(
       "Unsupported window type and sorted order combination for range "
