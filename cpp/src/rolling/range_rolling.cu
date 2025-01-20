@@ -260,7 +260,8 @@ template <rolling::direction Direction>
 {
   auto d_orderby = column_device_view::create(orderby, stream);
   auto it        = cudf::detail::make_counting_transform_iterator(
-    size_type{0}, [d_orderby = *d_orderby, d_offsets = offsets.data()](size_type i) -> bool {
+    size_type{0},
+    [d_orderby = *d_orderby, d_offsets = offsets.data()] __device__(size_type i) -> bool {
       return d_orderby.is_null_nocheck(d_offsets[i]);
     });
   // Sort order is ASCENDING
