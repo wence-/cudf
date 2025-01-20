@@ -38,7 +38,9 @@
 #include <cuda/std/type_traits>
 #include <thrust/binary_search.h>
 
-namespace cudf {
+#include <type_traits>
+
+namespace CUDF_EXPORT cudf {
 
 namespace detail::rolling {
 
@@ -109,7 +111,6 @@ struct grouped_with_nulls {
   cudf::size_type const* labels_;
   cudf::size_type const* offsets_;
   cudf::size_type const* null_counts_;
-  column_device_view const orderby_;
 
   static constexpr bool has_nulls{true};
   /**
@@ -248,16 +249,82 @@ template <typename T, typename V>
 }
 
 /**
+ * @brief Compute `x - y` saturating at the numeric bounds rather than
+ * overflowing.
+ *
+ * @tparam T the type of the result and left operand.
+ * @tparam V the type of the right operand.
+ * @param x The left operand.
+ * @param y The right operand.
+ *
+ * @returns x - y, saturated at the numeric limits for the type of
+ * `x`, without overflowing or invoking undefined behaviour.
+ *
+ * @note If `T` is a numeric type we must have `std::is_same_v<T,
+ * V>`. If `T` is a timestamp type, `V` must be a duration type and
+ * `std::is_same_v<typename T::duration, V>`. Note in particular that the
+ * usual integral promotion rules are not applied. If `T` is a fixed
+ * point type, then `V` must be the representation type of `T`, and it
+ * is required that `x` and `y` have the same scale.
+ */
+template <typename T, typename V>
+[[nodiscard]] __host__ __device__ constexpr T sub_sat(T x, V y) noexcept
+{
+  if constexpr (cudf::is_timestamp_t<T>()) {
+    static_assert(cudf::is_duration_t<V>(), "Can only add durations to timestamps");
+    static_assert(cuda::std::is_same_v<typename T::duration, V>,
+                  "Duration resolution must match timestamp resolution");
+    return T{add_sat(x.time_since_epoch(), y)};
+  } else if constexpr (cudf::is_duration_t<T>()) {
+    static_assert(cuda::std::is_same_v<T, V>, "Cannot add mismatching types");
+    return T{add_sat(x.count(), y.count())};
+  } else if constexpr (cudf::is_fixed_point<T>()) {
+    using Rep = typename T::rep;
+    // Requirement, not checked, x and y have the same scale.
+    static_assert(cuda::std::is_same_v<Rep, V>, "Must add rep type of fixed point to fixed point.");
+    return T{numeric::scaled_integer<Rep>{add_sat(x.value(), y), x.scale()}};
+  } else {
+    static_assert(cuda::std::is_same_v<T, V>, "Cannot add mismatching types");
+
+    if constexpr (cuda::std::is_floating_point_v<T>) {
+      // Question: should subtracting a finite y from a finite x saturate at
+      // numeric_limits::lowest()/max()?
+      return x - y;
+    } else if constexpr (cuda::std::is_signed_v<T>) {
+      using U  = cuda::std::make_unsigned_t<T>;
+      U ux     = static_cast<U>(x);
+      U uy     = static_cast<U>(y);
+      U result = ux - uy;
+      ux       = (ux >> cuda::std::numeric_limits<T>::digits) +
+           static_cast<U>(cuda::std::numeric_limits<T>::max());
+      // Note: this cast is implementation defined (until C++20) but all
+      // the platforms we care about do the twos-complement thing.
+      return static_cast<T>((ux ^ uy) & (ux ^ result)) < 0 ? ux : result;
+    } else if constexpr (cuda::std::is_unsigned_v<T>) {
+      T result = x - y;
+      // Only way we can overflow is in the negative direction
+      // in which case result will be less than or equal to both of x and y.
+      // To saturate, we bit-and with (T)-1 in this case
+      return result & (-static_cast<T>(result <= x));
+    } else if constexpr (cudf::is_duration_t<T>()) {
+      return T{add_sat(x.count(), y.count())};
+    } else {
+      static_assert(std::integral_constant<T, false>(),
+                    "Saturating subtraction only for signed and unsigned integers, floats, "
+                    "durations, fixed point, or timestamps.");
+    }
+  }
+}
+
+/**
  * @brief Functor to dispatch computation of clamped range-based
  * rolling window bounds.
  *
- * @tparam Direction The direction (preceding or following) of the
- * @tparam WindowType The type of window being computed
- * window being computed.
- * @tparam Order The sort order of the orderby column defining the
- * window.
+ * @tparam Direction The direction (preceding or following) of the window
+ * @tparam WindowTag The tag indicating the type of window being computed
+ * @tparam Order The sort order of the orderby column defining the window.
  */
-template <direction Direction, window_tag WindowType, cudf::order Order>
+template <direction Direction, window_tag WindowTag, cudf::order Order>
 struct range_window_clamper {
   /**
    * @brief Functor to compute distance from a given row to the edge
@@ -304,51 +371,61 @@ struct range_window_clamper {
      */
     [[nodiscard]] __device__ size_type operator()(size_type i) const
     {
-      using Comp      = op_t<WindowType, Order>;
+      using Comp      = op_t<WindowTag, Order>;
       auto const info = groups.row_info(i);
       auto const [null_count, group_start, group_end, null_start, null_end, start, end] =
         groups.row_info(i);
       if constexpr (Direction == direction::PRECEDING) {
-        if constexpr (WindowType == window_tag::UNBOUNDED) { return i - group_start + 1; }
+        if constexpr (WindowTag == window_tag::UNBOUNDED) { return i - group_start + 1; }
         if (Grouping::has_nulls && i >= null_start && i < null_end) { return i - null_start + 1; }
-        if constexpr (WindowType == window_tag::CURRENT_ROW) {
-          return 1 +
-                 thrust::distance(
-                   thrust::lower_bound(thrust::seq, begin + start, begin + i, *(begin + i), Comp{}),
-                   begin + i);
-        } else if constexpr (WindowType != window_tag::UNBOUNDED) {
+        if constexpr (WindowTag == window_tag::CURRENT_ROW) {
+          return 1 + thrust::distance(
+                       thrust::lower_bound(thrust::seq, begin + start, begin + i, begin[i], Comp{}),
+                       begin + i);
+        } else if constexpr (WindowTag != window_tag::UNBOUNDED) {
+          OrderbyT value;
+          if constexpr (Order == order::ASCENDING) {
+            value = sub_sat(begin[i], *row_delta);
+          } else {
+            value = add_sat(begin[i], *row_delta);
+          }
           return begin + i -
-                 thrust::lower_bound(thrust::seq,
-                                     begin + start,
-                                     begin + end,
-                                     add_sat(*(begin + i), *row_delta),
-                                     Comp{}) +
-                 1;
+                 thrust::lower_bound(thrust::seq, begin + start, begin + end, value, Comp{}) + 1;
         } else {
-          CUDF_UNREACHABLE("Unexpected WindowType");
+          CUDF_UNREACHABLE("Unexpected WindowTag");
         }
       } else {
-        if constexpr (WindowType == window_tag::UNBOUNDED) { return group_end - i - 1; }
+        if constexpr (WindowTag == window_tag::UNBOUNDED) { return group_end - i - 1; }
         if (Grouping::has_nulls && i >= null_start && i < null_end) { return null_end - i - 1; }
-        if constexpr (WindowType == window_tag::CURRENT_ROW) {
+        if constexpr (WindowTag == window_tag::CURRENT_ROW) {
           return thrust::distance(
                    begin + i,
-                   thrust::upper_bound(thrust::seq, begin + i, begin + end, *(begin + i), Comp{})) -
+                   thrust::upper_bound(thrust::seq, begin + i, begin + end, begin[i], Comp{})) -
                  1;
-        } else if constexpr (WindowType != window_tag::UNBOUNDED) {
-          return thrust::distance(begin + i,
-                                  thrust::upper_bound(thrust::seq,
-                                                      begin + start,
-                                                      begin + end,
-                                                      add_sat(*(begin + i), *row_delta),
-                                                      Comp{})) -
+        } else if constexpr (WindowTag != window_tag::UNBOUNDED) {
+          OrderbyT value;
+          if constexpr (Order == order::ASCENDING) {
+            value = add_sat(begin[i], *row_delta);
+          } else {
+            value = sub_sat(begin[i], *row_delta);
+          }
+          return thrust::distance(
+                   begin + i,
+                   thrust::upper_bound(thrust::seq, begin + start, begin + end, value, Comp{})) -
                  1;
         } else {
-          CUDF_UNREACHABLE("Unexpected WindowType");
+          CUDF_UNREACHABLE("Unexpected WindowTag");
         }
       }
     }
   };
+
+  template <typename Grouping, typename OrderbyT, typename DeltaT>
+  distance_kernel(Grouping,
+                  DeltaT const*,
+                  column_device_view::const_iterator<OrderbyT>,
+                  column_device_view::const_iterator<OrderbyT>)
+    -> distance_kernel<Grouping, OrderbyT, DeltaT>;
 
   /**
    * @brief Compute the window bounds (possibly grouped) for an orderby column.
@@ -376,8 +453,7 @@ struct range_window_clamper {
     auto d_begin            = d_orderby->begin<OrderbyT>();
     auto d_end              = d_orderby->end<OrderbyT>();
     auto const* d_row_delta = row_delta ? dynamic_cast<ScalarT const*>(row_delta)->data() : nullptr;
-    using DeltaT = cuda::std::remove_cv_t<cuda::std::remove_pointer_t<decltype(d_row_delta)>>;
-    auto copy_n  = [&](auto&& kernel) {
+    auto copy_n             = [&](auto&& kernel) {
       thrust::copy_n(rmm::exec_policy_nosync(stream),
                      cudf::detail::make_counting_transform_iterator(0, kernel),
                      orderby.size(),
@@ -385,31 +461,25 @@ struct range_window_clamper {
     };
     if (!grouping.has_value()) {
       if (orderby.has_nulls()) {
-        copy_n(distance_kernel<ungrouped_with_nulls, OrderbyT, DeltaT>{
+        copy_n(distance_kernel{
           ungrouped_with_nulls{nulls_at_start, orderby.size(), orderby.null_count()},
           d_row_delta,
           d_begin,
           d_end});
       } else {
-        copy_n(distance_kernel<ungrouped, OrderbyT, DeltaT>{
-          ungrouped{orderby.size()}, d_row_delta, d_begin, d_end});
+        copy_n(distance_kernel{ungrouped{orderby.size()}, d_row_delta, d_begin, d_end});
       }
     } else {
       auto [labels, offsets, nulls_per_group] = grouping.value();
       if (orderby.has_nulls()) {
-        copy_n(distance_kernel<grouped_with_nulls, OrderbyT, DeltaT>{grouped_with_nulls{
-                                                                       nulls_at_start,
-                                                                       labels.data(),
-                                                                       offsets.data(),
-                                                                       nulls_per_group.data(),
-                                                                       *d_orderby,
-                                                                     },
-                                                                     d_row_delta,
-                                                                     d_begin,
-                                                                     d_end});
+        copy_n(distance_kernel{
+          grouped_with_nulls{nulls_at_start, labels.data(), offsets.data(), nulls_per_group.data()},
+          d_row_delta,
+          d_begin,
+          d_end});
       } else {
-        copy_n(distance_kernel<grouped, OrderbyT, DeltaT>{
-          grouped{labels.data(), offsets.data()}, d_row_delta, d_begin, d_end});
+        copy_n(
+          distance_kernel{grouped{labels.data(), offsets.data()}, d_row_delta, d_begin, d_end});
       }
     }
     return result;
@@ -424,7 +494,7 @@ struct range_window_clamper {
   static constexpr bool is_supported()
   {
     return (cuda::std::is_same_v<OrderbyT, cudf::string_view> &&
-            (WindowType == window_tag::CURRENT_ROW || WindowType == window_tag::UNBOUNDED)) ||
+            (WindowTag == window_tag::CURRENT_ROW || WindowTag == window_tag::UNBOUNDED)) ||
            cudf::is_numeric_not_bool<OrderbyT>() || cudf::is_timestamp<OrderbyT>() ||
            cudf::is_fixed_point<OrderbyT>();
   }
@@ -481,8 +551,8 @@ struct range_window_clamper {
 
   template <typename OrderbyT,
             CUDF_ENABLE_IF(cuda::std::is_same_v<OrderbyT, cudf::string_view> &&
-                           (WindowType == window_tag::CURRENT_ROW ||
-                            WindowType == window_tag::UNBOUNDED))>
+                           (WindowTag == window_tag::CURRENT_ROW ||
+                            WindowTag == window_tag::UNBOUNDED))>
   [[nodiscard]] std::unique_ptr<column> operator()(column_view const& orderby,
                                                    std::optional<grouping_type> const& grouping,
                                                    bool nulls_at_start,
@@ -507,4 +577,4 @@ struct range_window_clamper {
   }
 };
 }  // namespace detail::rolling
-}  // namespace cudf
+}  // namespace CUDF_EXPORT cudf

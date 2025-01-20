@@ -28,7 +28,7 @@
 
 #include <cstddef>
 
-namespace cudf {
+namespace CUDF_EXPORT cudf {
 
 namespace detail::rolling {
 
@@ -130,4 +130,4 @@ template <direction Direction, typename Grouping>
     cudf::size_type{0}, fixed_window_clamper<Grouping, Direction>{grouper, delta});
 }
 }  // namespace detail::rolling
-}  // namespace cudf
+}  // namespace CUDF_EXPORT cudf
