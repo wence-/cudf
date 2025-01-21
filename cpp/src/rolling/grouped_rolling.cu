@@ -331,15 +331,6 @@ std::unique_ptr<column> grouped_range_rolling_window(table_view const& group_key
     return optimized_unbounded_window(group_keys, input, aggr, stream, mr);
   }
 
-  using sort_groupby_helper = cudf::groupby::detail::sort::sort_groupby_helper;
-  using index_vector        = sort_groupby_helper::index_vector;
-
-  index_vector group_offsets(0, stream), group_labels(0, stream);
-  if (group_keys.num_columns() > 0) {
-    sort_groupby_helper helper{group_keys, cudf::null_policy::INCLUDE, cudf::sorted::YES, {}};
-    group_offsets = index_vector(helper.group_offsets(stream), stream);
-    group_labels  = index_vector(helper.group_labels(stream), stream);
-  }
   auto get_window_type = [](range_window_bounds const& bound) -> window_type {
     if (bound.is_unbounded()) {
       return unbounded{};
