@@ -197,27 +197,45 @@ template <rolling::direction Direction>
 [[nodiscard]] null_order deduce_null_order(column_view const& orderby,
                                            order order,
                                            rmm::device_uvector<size_type> const& offsets,
+                                           rmm::device_uvector<size_type> const& per_group_nulls,
                                            rmm::cuda_stream_view stream)
 {
   auto d_orderby = column_device_view::create(orderby, stream);
-  auto it        = cudf::detail::make_counting_transform_iterator(
-    size_type{0},
-    [d_orderby = *d_orderby, d_offsets = offsets.data()] __device__(size_type i) -> bool {
-      return d_orderby.is_null_nocheck(d_offsets[i]);
-    });
-  // Sort order is ASCENDING
-  // null_order was either BEFORE or AFTER
-  // If at least one group has a null at the beginning must be nulls at start (BEFORE),
-  // otherwise must be nulls at end (AFTER)
-  // OR
-  // Sort order is DESCENDING
-  // null_order was either BEFORE or AFTER
-  // If at least one group has a null at the end must be nulls at ends of groups (BEFORE).
-  // Otherwise must be nulls at start (AFTER)
-  it             = order == order::DESCENDING ? it + 1 : it;
-  auto is_before = thrust::reduce(
-    rmm::exec_policy_nosync(stream), it, it + offsets.size() - 1, false, thrust::logical_or<>{});
-  return is_before ? null_order::BEFORE : null_order::AFTER;
+  if (order == order::ASCENDING) {
+    // Sort order is ASCENDING
+    // null_order was either BEFORE or AFTER
+    // If at least one group has a null at the beginning and that
+    // group has more entries than the null count of the group, must
+    // be nulls at starts of groups (BEFORE),otherwise must be nulls at end (AFTER)
+    auto it = cudf::detail::make_counting_transform_iterator(
+      size_type{0},
+      [d_orderby       = *d_orderby,
+       d_offsets       = offsets.data(),
+       nulls_per_group = per_group_nulls.data()] __device__(size_type i) -> bool {
+        return nulls_per_group[i] < (d_offsets[i + 1] - d_offsets[i]) &&
+               d_orderby.is_null_nocheck(d_offsets[i]);
+      });
+    auto is_before = thrust::reduce(
+      rmm::exec_policy_nosync(stream), it, it + offsets.size() - 1, false, thrust::logical_or<>{});
+    return is_before ? null_order::BEFORE : null_order::AFTER;
+  } else {
+    // Sort order is DESCENDING
+    // null_order was either BEFORE or AFTER
+    // If at least one group has a null at the end and that group has
+    // more entries than the null count of the group must be nulls at ends of groups (BEFORE).
+    // Otherwise must be nulls at start (AFTER)
+    auto it = cudf::detail::make_counting_transform_iterator(
+      size_type{0},
+      [d_orderby       = *d_orderby,
+       d_offsets       = offsets.data(),
+       nulls_per_group = per_group_nulls.data()] __device__(size_type i) -> bool {
+        return nulls_per_group[i] < (d_offsets[i + 1] - d_offsets[i]) &&
+               d_orderby.is_null_nocheck(d_offsets[i + 1] - 1);
+      });
+    auto is_before = thrust::reduce(
+      rmm::exec_policy_nosync(stream), it, it + offsets.size() - 1, false, thrust::logical_or<>{});
+    return is_before ? null_order::BEFORE : null_order::AFTER;
+  }
 }
 
 std::pair<std::unique_ptr<column>, std::unique_ptr<column>> make_range_window_bounds(
@@ -255,7 +273,7 @@ std::pair<std::unique_ptr<column>, std::unique_ptr<column>> make_range_window_bo
         // Doesn't matter in this case
         return null_order::BEFORE;
       }
-      return deduce_null_order(orderby, order, offsets, stream);
+      return deduce_null_order(orderby, order, offsets, per_group_nulls, stream);
     }();
     return {make_preceding(grouping, deduced_null_order),
             make_following(grouping, deduced_null_order)};
