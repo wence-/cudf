@@ -39,8 +39,6 @@
 #include <cuda/std/type_traits>
 #include <thrust/binary_search.h>
 
-#include <type_traits>
-
 namespace CUDF_EXPORT cudf {
 
 namespace detail::rolling {
