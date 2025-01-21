@@ -14,10 +14,7 @@
  * limitations under the License.
  */
 
-#include "cudf/aggregation.hpp"
-#include "cudf/utilities/traits.hpp"
 #include "detail/optimized_unbounded_window.hpp"
-#include "detail/range_comparator_utils.cuh"
 #include "detail/range_window_bounds.hpp"
 #include "detail/rolling.cuh"
 #include "detail/rolling_jit.hpp"
@@ -29,26 +26,17 @@
 #include <cudf/detail/rolling.hpp>
 #include <cudf/detail/utilities/assert.cuh>
 #include <cudf/detail/utilities/vector_factories.hpp>
-#include <cudf/reduction.hpp>
 #include <cudf/rolling.hpp>
 #include <cudf/rolling/range_window_bounds.hpp>
 #include <cudf/types.hpp>
 #include <cudf/unary.hpp>
 #include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/memory_resource.hpp>
+#include <cudf/utilities/traits.hpp>
 
 #include <rmm/cuda_stream_view.hpp>
 
-#include <cub/device/device_segmented_reduce.cuh>
 #include <cuda/functional>
-#include <thrust/binary_search.h>
-#include <thrust/execution_policy.h>
-#include <thrust/for_each.h>
-#include <thrust/functional.h>
-#include <thrust/iterator/counting_iterator.h>
-#include <thrust/partition.h>
-
-#include <driver_types.h>
 
 namespace cudf {
 
