@@ -14,12 +14,15 @@
  * limitations under the License.
  */
 
+#include "cudf/aggregation.hpp"
+#include "cudf/utilities/traits.hpp"
 #include "detail/optimized_unbounded_window.hpp"
 #include "detail/range_comparator_utils.cuh"
 #include "detail/range_window_bounds.hpp"
 #include "detail/rolling.cuh"
 #include "detail/rolling_jit.hpp"
 #include "detail/rolling_utils.cuh"
+#include "rolling/detail/rolling.hpp"
 
 #include <cudf/detail/iterator.cuh>
 #include <cudf/detail/nvtx/ranges.hpp>
@@ -27,6 +30,7 @@
 #include <cudf/detail/utilities/assert.cuh>
 #include <cudf/detail/utilities/vector_factories.hpp>
 #include <cudf/reduction.hpp>
+#include <cudf/rolling.hpp>
 #include <cudf/rolling/range_window_bounds.hpp>
 #include <cudf/types.hpp>
 #include <cudf/unary.hpp>
@@ -43,6 +47,8 @@
 #include <thrust/functional.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/partition.h>
+
+#include <driver_types.h>
 
 namespace cudf {
 
@@ -383,7 +389,7 @@ std::unique_ptr<column> range_window_ASC(column_view const& input,
              1;  // Add 1, for `preceding` to account for current row.
     });
 
-  auto const preceding_column =
+  std::unique_ptr<column> preceding_column =
     cudf::detail::expand_to_column(preceding_calculator, input.size(), stream);
 
   auto const following_calculator = cuda::proclaim_return_type<size_type>(
@@ -419,8 +425,28 @@ std::unique_ptr<column> range_window_ASC(column_view const& input,
              1;
     });
 
-  auto const following_column =
+  std::unique_ptr<column> following_column =
     cudf::detail::expand_to_column(following_calculator, input.size(), stream);
+
+  std::vector<size_type> tmp(preceding_column->size());
+  CUDF_CUDA_TRY(cudaMemcpy(tmp.data(),
+                           preceding_column->view().data<size_type>(),
+                           sizeof(size_type) * tmp.size(),
+                           cudaMemcpyDeviceToHost));
+  std::cout << "Prec (old): [";
+  for (size_t i = 0; i < tmp.size(); i++) {
+    std::cout << tmp[i] << " ";
+  }
+  std::cout << "]" << std::endl;
+  CUDF_CUDA_TRY(cudaMemcpy(tmp.data(),
+                           following_column->view().data<size_type>(),
+                           sizeof(size_type) * tmp.size(),
+                           cudaMemcpyDeviceToHost));
+  std::cout << "Follow (old): [";
+  for (size_t i = 0; i < tmp.size(); i++) {
+    std::cout << tmp[i] << " ";
+  }
+  std::cout << "]" << std::endl;
 
   return cudf::detail::rolling_window(
     input, preceding_column->view(), following_column->view(), min_periods, aggr, stream, mr);
@@ -624,6 +650,25 @@ std::unique_ptr<column> range_window_ASC(column_view const& input,
 
   auto const following_column =
     cudf::detail::expand_to_column(following_calculator, input.size(), stream);
+  std::vector<size_type> tmp(preceding_column->size());
+  CUDF_CUDA_TRY(cudaMemcpy(tmp.data(),
+                           preceding_column->view().template data<size_type>(),
+                           sizeof(size_type) * tmp.size(),
+                           cudaMemcpyDeviceToHost));
+  std::cout << "Prec (old): [";
+  for (size_t i = 0; i < tmp.size(); i++) {
+    std::cout << tmp[i] << " ";
+  }
+  std::cout << "]" << std::endl;
+  CUDF_CUDA_TRY(cudaMemcpy(tmp.data(),
+                           following_column->view().template data<size_type>(),
+                           sizeof(size_type) * tmp.size(),
+                           cudaMemcpyDeviceToHost));
+  std::cout << "Follow (old): [";
+  for (size_t i = 0; i < tmp.size(); i++) {
+    std::cout << tmp[i] << " ";
+  }
+  std::cout << "]" << std::endl;
   return cudf::detail::rolling_window(
     input, preceding_column->view(), following_column->view(), min_periods, aggr, stream, mr);
 }
@@ -721,6 +766,25 @@ std::unique_ptr<column> range_window_DESC(column_view const& input,
   auto const following_column =
     cudf::detail::expand_to_column(following_calculator, input.size(), stream);
 
+  std::vector<size_type> tmp(preceding_column->size());
+  CUDF_CUDA_TRY(cudaMemcpy(tmp.data(),
+                           preceding_column->view().template data<size_type>(),
+                           sizeof(size_type) * tmp.size(),
+                           cudaMemcpyDeviceToHost));
+  std::cout << "Prec (old): [";
+  for (size_t i = 0; i < tmp.size(); i++) {
+    std::cout << tmp[i] << " ";
+  }
+  std::cout << "]" << std::endl;
+  CUDF_CUDA_TRY(cudaMemcpy(tmp.data(),
+                           following_column->view().template data<size_type>(),
+                           sizeof(size_type) * tmp.size(),
+                           cudaMemcpyDeviceToHost));
+  std::cout << "Follow (old): [";
+  for (size_t i = 0; i < tmp.size(); i++) {
+    std::cout << tmp[i] << " ";
+  }
+  std::cout << "]" << std::endl;
   return cudf::detail::rolling_window(
     input, preceding_column->view(), following_column->view(), min_periods, aggr, stream, mr);
 }
@@ -830,6 +894,25 @@ std::unique_ptr<column> range_window_DESC(column_view const& input,
   auto const following_column =
     cudf::detail::expand_to_column(following_calculator, input.size(), stream);
 
+  std::vector<size_type> tmp(preceding_column->size());
+  CUDF_CUDA_TRY(cudaMemcpy(tmp.data(),
+                           preceding_column->view().template data<size_type>(),
+                           sizeof(size_type) * tmp.size(),
+                           cudaMemcpyDeviceToHost));
+  std::cout << "Prec (old): [";
+  for (size_t i = 0; i < tmp.size(); i++) {
+    std::cout << tmp[i] << " ";
+  }
+  std::cout << "]" << std::endl;
+  CUDF_CUDA_TRY(cudaMemcpy(tmp.data(),
+                           following_column->view().template data<size_type>(),
+                           sizeof(size_type) * tmp.size(),
+                           cudaMemcpyDeviceToHost));
+  std::cout << "Follow (old): [";
+  for (size_t i = 0; i < tmp.size(); i++) {
+    std::cout << tmp[i] << " ";
+  }
+  std::cout << "]" << std::endl;
   if (aggr.kind == aggregation::CUDA || aggr.kind == aggregation::PTX) {
     CUDF_FAIL("Ranged rolling window does NOT (yet) support UDF.");
   } else {
@@ -1079,20 +1162,41 @@ std::unique_ptr<column> grouped_range_rolling_window(table_view const& group_key
     group_offsets = index_vector(helper.group_offsets(stream), stream);
     group_labels  = index_vector(helper.group_labels(stream), stream);
   }
+  auto get_window_type = [](range_window_bounds const& bound) -> window_type {
+    if (bound.is_unbounded()) {
+      return unbounded{};
+    } else if (bound.is_current_row()) {
+      return current_row{};
+    } else {
+      return bounded_closed{bound.range_scalar()};
+    }
+  };
+  auto [preceding_column, following_column] =
+    make_range_window_bounds(group_keys,
+                             order_by_column,
+                             order,
+                             get_window_type(preceding),
+                             get_window_type(following),
+                             stream,
+                             cudf::get_current_device_resource_ref());
 
-  return cudf::type_dispatcher(order_by_column.type(),
-                               dispatch_grouped_range_rolling_window{},
-                               input,
-                               order_by_column,
-                               order,
-                               group_offsets,
-                               group_labels,
-                               preceding,
-                               following,
-                               min_periods,
-                               aggr,
-                               stream,
-                               mr);
+  if (!preceding_column) {
+    auto old_result = cudf::type_dispatcher(order_by_column.type(),
+                                            dispatch_grouped_range_rolling_window{},
+                                            input,
+                                            order_by_column,
+                                            order,
+                                            group_offsets,
+                                            group_labels,
+                                            preceding,
+                                            following,
+                                            min_periods,
+                                            aggr,
+                                            stream,
+                                            mr);
+  }
+  return detail::rolling_window(
+    input, preceding_column->view(), following_column->view(), min_periods, aggr, stream, mr);
 }
 
 }  // namespace detail

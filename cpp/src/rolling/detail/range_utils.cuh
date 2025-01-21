@@ -152,7 +152,7 @@ struct grouped_with_nulls {
  */
 template <typename T>
 struct less {
-  constexpr bool operator()(T const x, T const y) const noexcept
+  constexpr bool operator()(T const& x, T const& y) const noexcept
   {
     if constexpr (cuda::std::is_floating_point_v<T>) {
       if (cuda::std::isnan(x)) { return false; }
