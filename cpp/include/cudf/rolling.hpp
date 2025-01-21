@@ -111,7 +111,6 @@ std::pair<std::unique_ptr<column>, std::unique_ptr<column>> make_range_window_bo
  * @param stream CUDA stream used for device memory operations and kernel launches
  * @param mr Device memory resource used to allocate the returned column's device memory
  *
- *
  * @note Using `make_range_window_bounds(table_view const&, column_view const&, order, null_order,
  * window_type, window_type, rmm::cuda_stream_view, rmm::device_async_resource_ref)` is preferred,
  * since this function requires the launch of an additional kernel to deduce the null order of the
@@ -669,6 +668,33 @@ std::unique_ptr<column> grouped_range_rolling_window(
   rmm::cuda_stream_view stream      = cudf::get_default_stream(),
   rmm::device_async_resource_ref mr = cudf::get_current_device_resource_ref());
 
+/**
+ * @brief Apply a grouping-aware range-based rolling window function to a sequence of columns.
+ *
+ * @param group_keys Possibly empty table of sorted keys defining groups.
+ * @param orderby Column defining window ranges. Must be sorted. If `group_keys` is non-empty, must
+ * be sorted groupwise.
+ * @param order Sort order of the `orderby` column.
+ * @param null_order Null sort order in the sorted `orderby` column.
+ * @param preceding Type of the preceding window.
+ * @param following Type of the following window.
+ * @param min_periods Minimum number of observations in the window required to have a value.
+ * @param requests Vector of pairs of columns and aggregation requests.
+ * @param stream CUDA stream used for device memory operations and kernel launches
+ * @param mr Device memory resource used to allocate the returned column's device memory
+ * @return A table of results, one column per input request.
+ */
+std::unique_ptr<table> grouped_range_rolling_window(
+  table_view const& group_keys,
+  column_view const& orderby,
+  order order,
+  null_order null_order,
+  window_type preceding,
+  window_type following,
+  size_type min_periods,
+  std::vector<std::pair<column_view const&, rolling_aggregation const&>> requests,
+  rmm::cuda_stream_view stream      = cudf::get_default_stream(),
+  rmm::device_async_resource_ref mr = cudf::get_current_device_resource_ref());
 /**
  * @brief  Applies a variable-size rolling window function to the values in a column.
  *

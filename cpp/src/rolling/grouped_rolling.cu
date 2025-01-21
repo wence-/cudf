@@ -38,6 +38,9 @@
 
 #include <cuda/functional>
 
+#include <iterator>
+#include <variant>
+
 namespace cudf {
 
 namespace detail {
@@ -291,6 +294,79 @@ range_window_bounds to_range_bounds(cudf::window_bounds const& days_bounds,
 
 namespace detail {
 
+std::unique_ptr<table> grouped_range_rolling_window(
+  table_view const& group_keys,
+  column_view const& orderby,
+  order order,
+  null_order null_order,
+  window_type preceding,
+  window_type following,
+  size_type min_periods,
+  std::vector<std::pair<column_view const&, rolling_aggregation const&>> requests,
+  rmm::cuda_stream_view stream,
+  rmm::device_async_resource_ref mr)
+{
+  std::vector<std::unique_ptr<column>> results;
+  results.reserve(requests.size());
+  // Can we avoid making the window bounds?
+  if (std::all_of(requests.begin(), requests.end(), [](auto const& req) {
+        return std::get<0>(req).is_empty();
+      })) {
+    std::transform(
+      requests.begin(), requests.end(), std::back_inserter(results), [](auto const& req) {
+        auto const& [value, agg] = req;
+        return cudf::detail::empty_output_for_rolling_aggregation(value, agg);
+      });
+    return std::make_unique<table>(std::move(results));
+  }
+  CUDF_EXPECTS(
+    std::all_of(requests.begin(),
+                requests.end(),
+                [&orderby](auto const& req) { return std::get<0>(req).size() == orderby.size(); }),
+    "Size mismatch between request columns and orderby column.");
+
+  // Can we do an optimized fully unbounded aggregation in all cases?
+  if (std::all_of(requests.begin(), requests.end(), [&](auto const& req) {
+        return can_optimize_unbounded_window(std::holds_alternative<unbounded>(preceding),
+                                             std::holds_alternative<unbounded>(following),
+                                             min_periods,
+                                             std::get<1>(req));
+      })) {
+    std::transform(
+      requests.begin(), requests.end(), std::back_inserter(results), [&](auto const& req) {
+        auto const& [value, agg] = req;
+        return optimized_unbounded_window(group_keys, value, agg, stream, mr);
+      });
+    return std::make_unique<table>(std::move(results));
+  }
+  // OK, need to do the more complicated thing
+  auto [preceding_column, following_column] =
+    make_range_window_bounds(group_keys,
+                             orderby,
+                             order,
+                             null_order,
+                             preceding,
+                             following,
+                             stream,
+                             cudf::get_current_device_resource_ref());
+  auto const& preceding_view = preceding_column->view();
+  auto const& following_view = following_column->view();
+  std::transform(
+    requests.begin(), requests.end(), std::back_inserter(results), [&](auto const& req) {
+      auto const& [value, agg] = req;
+      if (can_optimize_unbounded_window(std::holds_alternative<unbounded>(preceding),
+                                        std::holds_alternative<unbounded>(following),
+                                        min_periods,
+                                        agg)) {
+        return optimized_unbounded_window(group_keys, value, agg, stream, mr);
+      } else {
+        return detail::rolling_window(
+          value, preceding_view, following_view, min_periods, agg, stream, mr);
+      }
+    });
+  return std::make_unique<table>(std::move(results));
+}
+
 /**
  * @copydoc  std::unique_ptr<column> grouped_range_rolling_window(
  *               table_view const& group_keys,
@@ -470,4 +546,31 @@ std::unique_ptr<column> grouped_range_rolling_window(table_view const& group_key
                                               stream,
                                               mr);
 }
+
+std::unique_ptr<table> grouped_range_rolling_window(
+  table_view const& group_keys,
+  column_view const& orderby,
+  order order,
+  null_order null_order,
+  window_type preceding,
+  window_type following,
+  size_type min_periods,
+  std::vector<std::pair<column_view const&, rolling_aggregation const&>> requests,
+  rmm::cuda_stream_view stream,
+  rmm::device_async_resource_ref mr)
+{
+  CUDF_FUNC_RANGE();
+  CUDF_EXPECTS(min_periods > 0, "min_periods must be positive");
+  return detail::grouped_range_rolling_window(group_keys,
+                                              orderby,
+                                              order,
+                                              null_order,
+                                              preceding,
+                                              following,
+                                              min_periods,
+                                              requests,
+                                              stream,
+                                              mr);
+}
+
 }  // namespace cudf
