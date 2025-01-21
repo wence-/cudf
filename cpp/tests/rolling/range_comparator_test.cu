@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, NVIDIA CORPORATION.
+ * Copyright (c) 2023-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,9 @@
 #include <cudf_test/cudf_gtest.hpp>
 #include <cudf_test/type_lists.hpp>
 
-#include <src/rolling/detail/range_comparator_utils.cuh>
+#include <src/rolling/detail/range_utils.cuh>
+
+#include <type_traits>
 
 struct RangeComparatorTest : cudf::test::BaseFixture {};
 
@@ -32,7 +34,7 @@ TYPED_TEST_SUITE(RangeComparatorTypedTest, TestTypes);
 
 TYPED_TEST(RangeComparatorTypedTest, TestLessComparator)
 {
-  auto const less     = cudf::detail::nan_aware_less{};
+  auto const less     = cudf::detail::rolling::less<TypeParam>{};
   auto constexpr nine = TypeParam{9};
   auto constexpr ten  = TypeParam{10};
 
@@ -67,7 +69,7 @@ TYPED_TEST(RangeComparatorTypedTest, TestLessComparator)
 
 TYPED_TEST(RangeComparatorTypedTest, TestGreaterComparator)
 {
-  auto const greater  = cudf::detail::nan_aware_greater{};
+  auto const greater  = cudf::detail::rolling::greater<TypeParam>{};
   auto constexpr nine = TypeParam{9};
   auto constexpr ten  = TypeParam{10};
 
@@ -103,45 +105,54 @@ TYPED_TEST(RangeComparatorTypedTest, TestGreaterComparator)
 TYPED_TEST(RangeComparatorTypedTest, TestAddSafe)
 {
   using T = TypeParam;
-  EXPECT_EQ(cudf::detail::add_safe(T{3}, T{4}), T{7});
+  EXPECT_EQ(cudf::detail::rolling::add_sat(T{3}, T{4}), T{7});
 
   if constexpr (cuda::std::numeric_limits<T>::is_signed) {
-    EXPECT_EQ(cudf::detail::add_safe(T{-3}, T{4}), T{1});
+    EXPECT_EQ(cudf::detail::rolling::add_sat(T{-3}, T{4}), T{1});
   }
 
   auto constexpr max = cuda::std::numeric_limits<T>::max();
-  EXPECT_EQ(cudf::detail::add_safe(T{max - 5}, T{4}), max - 1);
-  EXPECT_EQ(cudf::detail::add_safe(T{max - 4}, T{4}), max);
-  EXPECT_EQ(cudf::detail::add_safe(T{max - 3}, T{4}), max);
-  EXPECT_EQ(cudf::detail::add_safe(max, T{4}), max);
+  EXPECT_EQ(cudf::detail::rolling::add_sat(T{max - 5}, T{4}), max - 1);
+  EXPECT_EQ(cudf::detail::rolling::add_sat(T{max - 4}, T{4}), max);
+  EXPECT_EQ(cudf::detail::rolling::add_sat(T{max - 3}, T{4}), max);
+  EXPECT_EQ(cudf::detail::rolling::add_sat(max, T{4}), max);
+  if constexpr (std::is_signed_v<T>) {
+    auto constexpr min = cuda::std::numeric_limits<T>::lowest();
+    EXPECT_EQ(cudf::detail::rolling::add_sat(T{-10}, min), min);
+  }
 
   if constexpr (std::is_floating_point_v<T>) {
     auto const NaN = std::numeric_limits<T>::quiet_NaN();
     auto const Inf = std::numeric_limits<T>::infinity();
-    EXPECT_TRUE(std::isnan(cudf::detail::add_safe(NaN, T{4})));
-    EXPECT_EQ(cudf::detail::add_safe(Inf, T{4}), Inf);
+    EXPECT_TRUE(std::isnan(cudf::detail::rolling::add_sat(NaN, T{4})));
+    EXPECT_EQ(cudf::detail::rolling::add_sat(Inf, T{4}), Inf);
   }
 }
 
 TYPED_TEST(RangeComparatorTypedTest, TestSubtractSafe)
 {
   using T = TypeParam;
-  EXPECT_EQ(cudf::detail::subtract_safe(T{4}, T{3}), T{1});
+  EXPECT_EQ(cudf::detail::rolling::sub_sat(T{4}, T{3}), T{1});
 
   if constexpr (cuda::std::numeric_limits<T>::is_signed) {
-    EXPECT_EQ(cudf::detail::subtract_safe(T{3}, T{4}), T{-1});
+    EXPECT_EQ(cudf::detail::rolling::sub_sat(T{3}, T{4}), T{-1});
   }
 
   auto constexpr min = cuda::std::numeric_limits<T>::lowest();
-  EXPECT_EQ(cudf::detail::subtract_safe(T{min + 5}, T{4}), min + 1);
-  EXPECT_EQ(cudf::detail::subtract_safe(T{min + 4}, T{4}), min);
-  EXPECT_EQ(cudf::detail::subtract_safe(T{min + 3}, T{4}), min);
-  EXPECT_EQ(cudf::detail::subtract_safe(min, T{4}), min);
+  auto constexpr max = cuda::std::numeric_limits<T>::max();
+  EXPECT_EQ(cudf::detail::rolling::sub_sat(T{min + 5}, T{4}), min + 1);
+  EXPECT_EQ(cudf::detail::rolling::sub_sat(T{min + 4}, T{4}), min);
+  EXPECT_EQ(cudf::detail::rolling::sub_sat(T{min + 3}, T{4}), min);
+  EXPECT_EQ(cudf::detail::rolling::sub_sat(min, T{4}), min);
+  EXPECT_EQ(cudf::detail::rolling::sub_sat(min, max), min);
 
+  if constexpr (std::is_signed_v<T>) {
+    EXPECT_EQ(cudf::detail::rolling::sub_sat(T{max - 1}, min), max);
+  }
   if constexpr (std::is_floating_point_v<T>) {
     auto const NaN = std::numeric_limits<T>::quiet_NaN();
     auto const Inf = std::numeric_limits<T>::infinity();
-    EXPECT_TRUE(std::isnan(cudf::detail::subtract_safe(NaN, T{4})));
-    EXPECT_EQ(cudf::detail::subtract_safe(-Inf, T{4}), -Inf);
+    EXPECT_TRUE(std::isnan(cudf::detail::rolling::sub_sat(NaN, T{4})));
+    EXPECT_EQ(cudf::detail::rolling::sub_sat(-Inf, T{4}), -Inf);
   }
 }

@@ -145,7 +145,6 @@ struct grouped_with_nulls {
   }
 };
 
-namespace {
 /*
  * Spark requires that orderby columns with floating point type have a
  * total order on floats where all NaNs compare equal to one-another,
@@ -153,7 +152,7 @@ namespace {
  */
 template <typename T>
 struct less {
-  constexpr bool operator()(T const& x, T const& y)
+  constexpr bool operator()(T const x, T const y) const noexcept
   {
     if constexpr (cuda::std::is_floating_point_v<T>) {
       if (cuda::std::isnan(x)) { return false; }
@@ -166,7 +165,7 @@ struct less {
 
 template <typename T>
 struct less_equal {
-  constexpr bool operator()(T const& x, T const& y)
+  constexpr bool operator()(T const& x, T const& y) const noexcept
   {
     if constexpr (cuda::std::is_floating_point_v<T>) {
       if (cuda::std::isnan(x)) { return cuda::std::isnan(y); }
@@ -178,7 +177,7 @@ struct less_equal {
 };
 template <typename T>
 struct greater {
-  constexpr bool operator()(T const& x, T const& y)
+  constexpr bool operator()(T const& x, T const& y) const noexcept
   {
     if constexpr (cuda::std::is_floating_point_v<T>) {
       if (cuda::std::isnan(x)) { return !cuda::std::isnan(y); }
@@ -191,7 +190,7 @@ struct greater {
 
 template <typename T>
 struct greater_equal {
-  constexpr bool operator()(T const& x, T const& y)
+  constexpr bool operator()(T const& x, T const& y) const noexcept
   {
     if constexpr (cuda::std::is_floating_point_v<T>) {
       if (cuda::std::isnan(x)) { return true; }
@@ -201,7 +200,6 @@ struct greater_equal {
     }
   }
 };
-}  // namespace
 
 /**
  * @brief Select the appropriate ordering comparator for the window
