@@ -35,6 +35,7 @@
 
 #include <cub/device/device_segmented_reduce.cuh>
 #include <cuda/functional>
+#include <cuda/std/limits>
 #include <cuda/std/type_traits>
 #include <thrust/binary_search.h>
 
@@ -144,30 +145,90 @@ struct grouped_with_nulls {
   }
 };
 
+namespace {
+/*
+ * Spark requires that orderby columns with floating point type have a
+ * total order on floats where all NaNs compare equal to one-another,
+ * and greater than any non-nan value. These structs implement that logic.
+ */
+template <typename T>
+struct less {
+  constexpr bool operator()(T const& x, T const& y)
+  {
+    if constexpr (cuda::std::is_floating_point_v<T>) {
+      if (cuda::std::isnan(x)) { return false; }
+      return cuda::std::isnan(y) || x < y;
+    } else {
+      return x < y;
+    }
+  }
+};
+
+template <typename T>
+struct less_equal {
+  constexpr bool operator()(T const& x, T const& y)
+  {
+    if constexpr (cuda::std::is_floating_point_v<T>) {
+      if (cuda::std::isnan(x)) { return cuda::std::isnan(y); }
+      return cuda::std::isnan(y) || x <= y;
+    } else {
+      return x <= y;
+    }
+  }
+};
+template <typename T>
+struct greater {
+  constexpr bool operator()(T const& x, T const& y)
+  {
+    if constexpr (cuda::std::is_floating_point_v<T>) {
+      if (cuda::std::isnan(x)) { return !cuda::std::isnan(y); }
+      return !cuda::std::isnan(y) && x > y;
+    } else {
+      return x > y;
+    }
+  }
+};
+
+template <typename T>
+struct greater_equal {
+  constexpr bool operator()(T const& x, T const& y)
+  {
+    if constexpr (cuda::std::is_floating_point_v<T>) {
+      if (cuda::std::isnan(x)) { return true; }
+      return !cuda::std::isnan(y) && x >= y;
+    } else {
+      return x >= y;
+    }
+  }
+};
+}  // namespace
+
 /**
- * @brief Select the appropriate ordering comparator for the window type.
+ * @brief Select the appropriate ordering comparator for the window
+ * type.
+ * @tparam T The type being compared.
  * @tparam Type The type of the window.
  */
-template <window_tag Type>
+template <typename T, window_tag Type>
 struct op_impl {
   using op     = void;
   using rev_op = void;
 };
 
-template <>
-struct op_impl<window_tag::BOUNDED_CLOSED> {
-  using op     = thrust::less<>;
-  using rev_op = thrust::greater<>;
+template <typename T>
+struct op_impl<T, window_tag::BOUNDED_CLOSED> {
+  using op     = less<T>;
+  using rev_op = greater<T>;
 };
-template <>
-struct op_impl<window_tag::BOUNDED_OPEN> {
-  using op     = thrust::less_equal<>;
-  using rev_op = thrust::greater_equal<>;
+template <typename T>
+struct op_impl<T, window_tag::BOUNDED_OPEN> {
+  using op     = less_equal<T>;
+  using rev_op = greater_equal<T>;
 };
-template <>
-struct op_impl<window_tag::CURRENT_ROW> {
-  using op     = thrust::less<>;
-  using rev_op = thrust::greater<>;
+template <typename T>
+struct op_impl<T, window_tag::CURRENT_ROW> {
+  using op     = less<T>;
+  using rev_op = greater<T>;
 };
 
 /**
@@ -175,10 +236,10 @@ struct op_impl<window_tag::CURRENT_ROW> {
  * @tparam Type The type of the window
  * @tparam Order The sort order of the column used to define the windows.
  */
-template <window_tag Type, order Order>
+template <typename T, window_tag Type, order Order>
 using op_t = std::conditional_t<Order == order::ASCENDING,
-                                typename op_impl<Type>::op,
-                                typename op_impl<Type>::rev_op>;
+                                typename op_impl<T, Type>::op,
+                                typename op_impl<T, Type>::rev_op>;
 
 /**
  * @brief Compute `x + y` saturating at the numeric bounds rather than
@@ -197,7 +258,10 @@ using op_t = std::conditional_t<Order == order::ASCENDING,
  * `std::is_same_v<typename T::duration, V>`. Note in particular that the
  * usual integral promotion rules are not applied. If `T` is a fixed
  * point type, then `V` must be the representation type of `T`, and it
- * is required that `x` and `y` have the same scale.
+ * is required that `x` and `y` have the same scale. If `T` is a
+ * floating point type, then it is required (not checked) that `y` is
+ * not inf or nan, otherwise behaviour is undefined, if `x` is finite,
+ * then overflow to +-inf is clamped at lowest()/max().
  */
 template <typename T, typename V>
 [[nodiscard]] __host__ __device__ constexpr T add_sat(T x, V y) noexcept
@@ -219,9 +283,19 @@ template <typename T, typename V>
     static_assert(cuda::std::is_same_v<T, V>, "Cannot add mismatching types");
 
     if constexpr (cuda::std::is_floating_point_v<T>) {
-      // Question: should adding a finite y to a finite x saturate at
-      // numeric_limits::lowest()/max()?
-      return x + y;
+      // Mimicking spark requirements, inf/nan x propagates
+      if (cuda::std::isinf(x) || cuda::std::isnan(x)) { return x; }
+      // Requirement, not checked, y is not inf or nan.
+      T result = x + y;
+      // If the result is outside the range of finite values it can at
+      // this point only be +- infinity (we can't generate a nan by
+      // adding a non-nan/non-inf y to a non-nan/non-inf x).
+      if (result < cuda::std::numeric_limits<T>::lowest()) {
+        return cuda::std::numeric_limits<T>::lowest();
+      } else if (result > cuda::std::numeric_limits<T>::max()) {
+        return cuda::std::numeric_limits<T>::max();
+      }
+      return result;
     } else if constexpr (cuda::std::is_signed_v<T>) {
       using U  = cuda::std::make_unsigned_t<T>;
       U ux     = static_cast<U>(x);
@@ -265,7 +339,10 @@ template <typename T, typename V>
  * `std::is_same_v<typename T::duration, V>`. Note in particular that the
  * usual integral promotion rules are not applied. If `T` is a fixed
  * point type, then `V` must be the representation type of `T`, and it
- * is required that `x` and `y` have the same scale.
+ * is required that `x` and `y` have the same scale. If `T` is a
+ * floating point type, then it is required (not checked) that `y` is
+ * not inf or nan, otherwise behaviour is undefined, if `x` is finite,
+ * then overflow to +-inf is clamped at lowest()/max().
  */
 template <typename T, typename V>
 [[nodiscard]] __host__ __device__ constexpr T sub_sat(T x, V y) noexcept
@@ -274,22 +351,31 @@ template <typename T, typename V>
     static_assert(cudf::is_duration_t<V>(), "Can only add durations to timestamps");
     static_assert(cuda::std::is_same_v<typename T::duration, V>,
                   "Duration resolution must match timestamp resolution");
-    return T{add_sat(x.time_since_epoch(), y)};
+    return T{sub_sat(x.time_since_epoch(), y)};
   } else if constexpr (cudf::is_duration_t<T>()) {
     static_assert(cuda::std::is_same_v<T, V>, "Cannot add mismatching types");
-    return T{add_sat(x.count(), y.count())};
+    return T{sub_sat(x.count(), y.count())};
   } else if constexpr (cudf::is_fixed_point<T>()) {
     using Rep = typename T::rep;
     // Requirement, not checked, x and y have the same scale.
     static_assert(cuda::std::is_same_v<Rep, V>, "Must add rep type of fixed point to fixed point.");
-    return T{numeric::scaled_integer<Rep>{add_sat(x.value(), y), x.scale()}};
+    return T{numeric::scaled_integer<Rep>{sub_sat(x.value(), y), x.scale()}};
   } else {
     static_assert(cuda::std::is_same_v<T, V>, "Cannot add mismatching types");
-
     if constexpr (cuda::std::is_floating_point_v<T>) {
-      // Question: should subtracting a finite y from a finite x saturate at
-      // numeric_limits::lowest()/max()?
-      return x - y;
+      // Mimicking spark requirements, inf/nan x propagates
+      if (cuda::std::isinf(x) || cuda::std::isnan(x)) { return x; }
+      // Requirement, not checked, y is not inf or nan.
+      T result = x - y;
+      // If the result is outside the range of finite values it can at
+      // this point only be +- infinity (we can't generate a nan by
+      // subtracting a non-nan/non-inf y from a non-nan/non-inf x).
+      if (result < cuda::std::numeric_limits<T>::lowest()) {
+        return cuda::std::numeric_limits<T>::lowest();
+      } else if (result > cuda::std::numeric_limits<T>::max()) {
+        return cuda::std::numeric_limits<T>::max();
+      }
+      return result;
     } else if constexpr (cuda::std::is_signed_v<T>) {
       using U  = cuda::std::make_unsigned_t<T>;
       U ux     = static_cast<U>(x);
@@ -307,7 +393,7 @@ template <typename T, typename V>
       // To saturate, we bit-and with (T)-1 in this case
       return result & (-static_cast<T>(result <= x));
     } else if constexpr (cudf::is_duration_t<T>()) {
-      return T{add_sat(x.count(), y.count())};
+      return T{sub_sat(x.count(), y.count())};
     } else {
       static_assert(std::integral_constant<T, false>(),
                     "Saturating subtraction only for signed and unsigned integers, floats, "
@@ -340,9 +426,16 @@ struct range_window_clamper {
    * @param begin Iterator to begin of orderby column on device.
    * @param end Iterator to end of orderby column on device.
    *
-   * @note If the window is a bounded one, then the endpoint of the
-   * window is always computed by ADDING the given @p row_delta to the
-   * current row value (saturating at the data type bounds).
+   * @note Let `x` be the value of the current row and `delta` the provided
+   * row delta then for bounded windows the endpoints are computed as follows.
+   *
+   *           | ASCENDING | DESCENDING
+   * ----------+-----------+-----------
+   * PRECEDING | x - delta | x + delta
+   * FOLLOWING | x + delta | x - delta
+   *
+   * See `sub_sat` and `add_sat` for details of the implementation of
+   * saturating addition/subtraction.
    */
   template <typename Grouping, typename OrderbyT, typename DeltaT>
   struct distance_kernel {
@@ -371,7 +464,7 @@ struct range_window_clamper {
      */
     [[nodiscard]] __device__ size_type operator()(size_type i) const
     {
-      using Comp      = op_t<WindowTag, Order>;
+      using Comp      = op_t<OrderbyT, WindowTag, Order>;
       auto const info = groups.row_info(i);
       auto const [null_count, group_start, group_end, null_start, null_end, start, end] =
         groups.row_info(i);
@@ -389,8 +482,9 @@ struct range_window_clamper {
           } else {
             value = add_sat(begin[i], *row_delta);
           }
-          return begin + i -
-                 thrust::lower_bound(thrust::seq, begin + start, begin + end, value, Comp{}) + 1;
+          return 1 + thrust::distance(
+                       thrust::lower_bound(thrust::seq, begin + start, begin + end, value, Comp{}),
+                       begin + i);
         } else {
           CUDF_UNREACHABLE("Unexpected WindowTag");
         }
@@ -526,12 +620,21 @@ struct range_window_clamper {
                                                    rmm::cuda_stream_view stream,
                                                    rmm::device_async_resource_ref mr) const
   {
-    CUDF_EXPECTS(!row_delta || cudf::have_same_types(orderby, *row_delta),
+    CUDF_EXPECTS(!row_delta || (orderby.type().id() == row_delta->type().id()),
                  "Orderby column and row_delta must both be fixed point.",
                  cudf::data_type_error);
-    CUDF_EXPECTS(!row_delta || row_delta->type().scale() == orderby.type().scale(),
-                 "Orderby column and row_delta must have same fixed point scale.",
+    // TODO: Push this requirement onto the caller and just check for
+    // equal scales (avoids a kernel launch to rescale)
+    CUDF_EXPECTS(!row_delta || row_delta->type().scale() >= orderby.type().scale(),
+                 "row_delta must have at least as much scale as orderby column.",
                  cudf::data_type_error);
+    if (row_delta && row_delta->type().scale() != orderby.type().scale()) {
+      auto const value =
+        dynamic_cast<fixed_point_scalar<OrderbyT> const*>(row_delta)->fixed_point_value(stream);
+      auto const new_scalar = cudf::fixed_point_scalar<OrderbyT>{
+        value.rescaled(numeric::scale_type{orderby.type().scale()}), true, stream};
+      return window_bounds<OrderbyT>(orderby, grouping, nulls_at_start, &new_scalar, stream, mr);
+    }
     return window_bounds<OrderbyT>(orderby, grouping, nulls_at_start, row_delta, stream, mr);
   }
 
