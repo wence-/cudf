@@ -72,7 +72,7 @@ struct current_row {};
 /**
  * @brief The type of the range-based rolling window endpoint.
  */
-using window_type = std::variant<unbounded, current_row, bounded_closed, bounded_open>;
+using range_window_type = std::variant<unbounded, current_row, bounded_closed, bounded_open>;
 
 /**
  * @brief Constructs preceding and following columns given window range specifications.
@@ -94,10 +94,10 @@ std::pair<std::unique_ptr<column>, std::unique_ptr<column>> make_range_window_bo
   column_view const& orderby,
   order order,
   null_order null_order,
-  window_type preceding,
-  window_type following,
-  rmm::cuda_stream_view stream,
-  rmm::device_async_resource_ref mr);
+  range_window_type preceding,
+  range_window_type following,
+  rmm::cuda_stream_view stream      = cudf::get_default_stream(),
+  rmm::device_async_resource_ref mr = cudf::get_current_device_resource_ref());
 
 /**
  * @brief Constructs preceding and following columns given window range specifications.
@@ -123,10 +123,10 @@ std::pair<std::unique_ptr<column>, std::unique_ptr<column>> make_range_window_bo
   table_view const& group_keys,
   column_view const& orderby,
   order order,
-  window_type preceding,
-  window_type following,
-  rmm::cuda_stream_view stream,
-  rmm::device_async_resource_ref mr);
+  range_window_type preceding,
+  range_window_type following,
+  rmm::cuda_stream_view stream      = cudf::get_default_stream(),
+  rmm::device_async_resource_ref mr = cudf::get_current_device_resource_ref());
 
 /**
  * @brief  Applies a fixed-size rolling window function to the values in a column.
@@ -689,8 +689,8 @@ std::unique_ptr<table> grouped_range_rolling_window(
   column_view const& orderby,
   order order,
   null_order null_order,
-  window_type preceding,
-  window_type following,
+  range_window_type preceding,
+  range_window_type following,
   size_type min_periods,
   std::vector<std::pair<column_view const&, rolling_aggregation const&>> requests,
   rmm::cuda_stream_view stream      = cudf::get_default_stream(),

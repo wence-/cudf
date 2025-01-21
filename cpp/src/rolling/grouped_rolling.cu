@@ -299,8 +299,8 @@ std::unique_ptr<table> grouped_range_rolling_window(
   column_view const& orderby,
   order order,
   null_order null_order,
-  window_type preceding,
-  window_type following,
+  range_window_type preceding,
+  range_window_type following,
   size_type min_periods,
   std::vector<std::pair<column_view const&, rolling_aggregation const&>> requests,
   rmm::cuda_stream_view stream,
@@ -407,7 +407,7 @@ std::unique_ptr<column> grouped_range_rolling_window(table_view const& group_key
     return optimized_unbounded_window(group_keys, input, aggr, stream, mr);
   }
 
-  auto get_window_type = [](range_window_bounds const& bound) -> window_type {
+  auto get_window_type = [](range_window_bounds const& bound) -> range_window_type {
     if (bound.is_unbounded()) {
       return unbounded{};
     } else if (bound.is_current_row()) {
@@ -552,8 +552,8 @@ std::unique_ptr<table> grouped_range_rolling_window(
   column_view const& orderby,
   order order,
   null_order null_order,
-  window_type preceding,
-  window_type following,
+  range_window_type preceding,
+  range_window_type following,
   size_type min_periods,
   std::vector<std::pair<column_view const&, rolling_aggregation const&>> requests,
   rmm::cuda_stream_view stream,

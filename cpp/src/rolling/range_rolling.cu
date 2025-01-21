@@ -83,7 +83,7 @@ template <rolling::direction Direction>
   std::optional<rolling::grouping_type> const& grouping,
   order order,
   null_order null_order,
-  window_type window,
+  range_window_type window,
   rmm::cuda_stream_view stream,
   rmm::device_async_resource_ref mr)
 {
@@ -243,8 +243,8 @@ std::pair<std::unique_ptr<column>, std::unique_ptr<column>> make_range_window_bo
   column_view const& orderby,
   order order,
   std::optional<null_order> null_order,
-  window_type preceding,
-  window_type following,
+  range_window_type preceding,
+  range_window_type following,
   rmm::cuda_stream_view stream,
   rmm::device_async_resource_ref mr)
 {
@@ -302,8 +302,8 @@ std::pair<std::unique_ptr<column>, std::unique_ptr<column>> make_range_window_bo
   table_view const& group_keys,
   column_view const& orderby,
   order order,
-  window_type preceding,
-  window_type following,
+  range_window_type preceding,
+  range_window_type following,
   rmm::cuda_stream_view stream,
   rmm::device_async_resource_ref mr)
 {
@@ -321,8 +321,8 @@ std::pair<std::unique_ptr<column>, std::unique_ptr<column>> make_range_window_bo
   column_view const& orderby,
   order order,
   null_order null_order,
-  window_type preceding,
-  window_type following,
+  range_window_type preceding,
+  range_window_type following,
   rmm::cuda_stream_view stream,
   rmm::device_async_resource_ref mr)
 {
