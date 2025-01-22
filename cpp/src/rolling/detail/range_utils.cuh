@@ -311,7 +311,70 @@ template <typename T, typename V>
     } else if constexpr (cudf::is_duration_t<T>()) {
       return T{add_sat(x.count(), y.count())};
     } else {
-      static_assert(std::integral_constant<T, false>(),
+      static_assert(cuda::std::integral_constant<T, false>(),
+                    "Saturating addition only for signed and unsigned integers, floats, "
+                    "durations, fixed point, or timestamps.");
+    }
+  }
+}
+
+template <typename T, typename V>
+[[nodiscard]] __host__ __device__ constexpr cuda::std::pair<T, bool> overflowing_add(T x,
+                                                                                     V y) noexcept
+{
+  if constexpr (cudf::is_timestamp_t<T>()) {
+    static_assert(cudf::is_duration_t<V>(), "Can only add durations to timestamps");
+    static_assert(cuda::std::is_same_v<typename T::duration, V>,
+                  "Duration resolution must match timestamp resolution");
+    auto const [value, did_overflow] = overflowing_add(x.time_since_epoch(), y);
+    return {T{value}, did_overflow};
+  } else if constexpr (cudf::is_duration_t<T>()) {
+    static_assert(cuda::std::is_same_v<T, V>, "Cannot add mismatching types");
+    auto const [value, did_overflow] = overflowing_add(x.count(), y.count());
+    return {T{value}, did_overflow};
+  } else if constexpr (cudf::is_fixed_point<T>()) {
+    using Rep = typename T::rep;
+    // Requirement, not checked, x and y have the same scale.
+    static_assert(cuda::std::is_same_v<Rep, V>, "Must add rep type of fixed point to fixed point.");
+    auto const [value, did_overflow] = overflowing_add(x.value(), y);
+    return {T{numeric::scaled_integer<Rep>{value, x.scale()}}, did_overflow};
+  } else {
+    static_assert(cuda::std::is_same_v<T, V>, "Cannot add mismatching types");
+
+    if constexpr (cuda::std::is_floating_point_v<T>) {
+      // Mimicking spark requirements, inf/nan x propagates
+      if (cuda::std::isinf(x) || cuda::std::isnan(x)) { return {x, false}; }
+      // Requirement, not checked, y is not inf or nan.
+      T result = x + y;
+      // If the result is outside the range of finite values it can at
+      // this point only be +- infinity (we can't generate a nan by
+      // adding a non-nan/non-inf y to a non-nan/non-inf x).
+      if (result < cuda::std::numeric_limits<T>::lowest()) {
+        return {cuda::std::numeric_limits<T>::lowest(), true};
+      } else if (result > cuda::std::numeric_limits<T>::max()) {
+        return {cuda::std::numeric_limits<T>::max(), true};
+      }
+      return {result, false};
+    } else if constexpr (cuda::std::is_signed_v<T>) {
+      using U  = cuda::std::make_unsigned_t<T>;
+      U ux     = static_cast<U>(x);
+      U uy     = static_cast<U>(y);
+      U result = ux + uy;
+      ux       = (ux >> cuda::std::numeric_limits<T>::digits) +
+           static_cast<U>(cuda::std::numeric_limits<T>::max());
+      // Note: this cast is implementation defined (until C++20) but all
+      // the platforms we care about do the twos-complement thing.
+      auto const did_overflow = static_cast<T>((ux ^ uy) | ~(uy ^ result)) >= 0;
+      return {did_overflow ? ux : result, did_overflow};
+    } else if constexpr (cuda::std::is_unsigned_v<T>) {
+      T result = x + y;
+      // Only way we can overflow is in the positive direction
+      // in which case result will be less than both of x and y.
+      // To saturate, we bit-or with (T)-1 in this case
+      auto const did_overflow = result < x;
+      return {result | (-static_cast<T>(did_overflow)), did_overflow};
+    } else {
+      static_assert(cuda::std::integral_constant<T, false>(),
                     "Saturating addition only for signed and unsigned integers, floats, "
                     "durations, fixed point, or timestamps.");
     }
@@ -398,8 +461,70 @@ template <typename T, typename V>
   }
 }
 
+template <typename T, typename V>
+[[nodiscard]] __host__ __device__ constexpr cuda::std::pair<T, bool> overflowing_sub(T x,
+                                                                                     V y) noexcept
+{
+  if constexpr (cudf::is_timestamp_t<T>()) {
+    static_assert(cudf::is_duration_t<V>(), "Can only add durations to timestamps");
+    static_assert(cuda::std::is_same_v<typename T::duration, V>,
+                  "Duration resolution must match timestamp resolution");
+    auto const [value, did_overflow] = overflowing_sub(x.time_since_epoch(), y);
+    return {T{value}, did_overflow};
+  } else if constexpr (cudf::is_duration_t<T>()) {
+    static_assert(cuda::std::is_same_v<T, V>, "Cannot add mismatching types");
+    auto const [value, did_overflow] = overflowing_sub(x.count(), y.count());
+    return {T{value}, did_overflow};
+  } else if constexpr (cudf::is_fixed_point<T>()) {
+    using Rep = typename T::rep;
+    // Requirement, not checked, x and y have the same scale.
+    static_assert(cuda::std::is_same_v<Rep, V>, "Must add rep type of fixed point to fixed point.");
+    auto const [value, did_overflow] = overflowing_sub(x.value(), y);
+    return {T{numeric::scaled_integer<Rep>{value, x.scale()}}, did_overflow};
+  } else {
+    static_assert(cuda::std::is_same_v<T, V>, "Cannot add mismatching types");
+    if constexpr (cuda::std::is_floating_point_v<T>) {
+      // Mimicking spark requirements, inf/nan x propagates
+      if (cuda::std::isinf(x) || cuda::std::isnan(x)) { return {x, false}; }
+      // Requirement, not checked, y is not inf or nan.
+      T result = x - y;
+      // If the result is outside the range of finite values it can at
+      // this point only be +- infinity (we can't generate a nan by
+      // subtracting a non-nan/non-inf y from a non-nan/non-inf x).
+      if (result < cuda::std::numeric_limits<T>::lowest()) {
+        return {cuda::std::numeric_limits<T>::lowest(), true};
+      } else if (result > cuda::std::numeric_limits<T>::max()) {
+        return {cuda::std::numeric_limits<T>::max(), true};
+      }
+      return {result, false};
+    } else if constexpr (cuda::std::is_signed_v<T>) {
+      using U  = cuda::std::make_unsigned_t<T>;
+      U ux     = static_cast<U>(x);
+      U uy     = static_cast<U>(y);
+      U result = ux - uy;
+      ux       = (ux >> cuda::std::numeric_limits<T>::digits) +
+           static_cast<U>(cuda::std::numeric_limits<T>::max());
+      // Note: this cast is implementation defined (until C++20) but all
+      // the platforms we care about do the twos-complement thing.
+      auto const did_overflow = static_cast<T>((ux ^ uy) & (ux ^ result)) < 0;
+      return {did_overflow ? ux : result, did_overflow};
+    } else if constexpr (cuda::std::is_unsigned_v<T>) {
+      T result = x - y;
+      // Only way we can overflow is in the negative direction
+      // in which case result will be greater than either of x or y.
+      // To saturate, we bit-and with (T)0 in this case
+      auto const did_overflow = result > x;
+      return {result & (-static_cast<T>(!did_overflow)), did_overflow};
+    } else {
+      static_assert(cuda::std::integral_constant<T, false>(),
+                    "Saturating subtraction only for signed and unsigned integers, floats, "
+                    "durations, fixed point, or timestamps.");
+    }
+  }
+}
+
 /**
- * @brief Functor to dispatch computation of clamped range-based
+ * @BRIEF Functor to dispatch computation of clamped range-based
  * rolling window bounds.
  *
  * @tparam Direction The direction (preceding or following) of the window
@@ -472,15 +597,54 @@ struct range_window_clamper {
                        thrust::lower_bound(thrust::seq, begin + start, begin + i, begin[i], Comp{}),
                        begin + i);
         } else if constexpr (WindowTag != window_tag::UNBOUNDED) {
+          // The preceding endpoint is computed via row_value - delta.
+          // When delta is positive, this can only overflow towards -infinity.
+          // If we did overflow towards -infinity, then the value
+          // we're searching for is some min. But -infinity < min, so
+          // we must always use a `BOUNDED_CLOSED` window so that
+          // orderby = [min, ...] with positive delta picks up that
+          // row in the window.
+          // Conversely, when delta is negative, we can only overflow
+          // towards +infinity. If we did overflow towards +infinity
+          // then the value we're searching for is some max. But
+          // +infinity > max, so we must use a `BOUNDED_OPEN` window
+          // so that orderby = [..., max] with negative delta does not
+          // pick up that row in the window.
           OrderbyT value;
+          bool did_overflow{false};
+          bool delta_positive{*row_delta > DeltaT{0}};
           if constexpr (Order == order::ASCENDING) {
-            value = sub_sat(begin[i], *row_delta);
+            auto const result = overflowing_sub(begin[i], *row_delta);
+            value             = cuda::std::get<0>(result);
+            did_overflow      = cuda::std::get<1>(result);
           } else {
-            value = add_sat(begin[i], *row_delta);
+            auto const result = overflowing_add(begin[i], *row_delta);
+            value             = cuda::std::get<0>(result);
+            did_overflow      = cuda::std::get<1>(result);
           }
-          return 1 + thrust::distance(
-                       thrust::lower_bound(thrust::seq, begin + start, begin + end, value, Comp{}),
-                       begin + i);
+          if (did_overflow) {
+            if (delta_positive) {
+              return 1 + thrust::distance(
+                           thrust::lower_bound(thrust::seq,
+                                               begin + start,
+                                               begin + end,
+                                               value,
+                                               op_t<OrderbyT, window_tag::BOUNDED_CLOSED, Order>{}),
+                           begin + i);
+            } else {
+              return 1 + thrust::distance(
+                           thrust::lower_bound(thrust::seq,
+                                               begin + start,
+                                               begin + end,
+                                               value,
+                                               op_t<OrderbyT, window_tag::BOUNDED_OPEN, Order>{}),
+                           begin + i);
+            }
+          } else {
+            return 1 + thrust::distance(thrust::lower_bound(
+                                          thrust::seq, begin + start, begin + end, value, Comp{}),
+                                        begin + i);
+          }
         } else {
           CUDF_UNREACHABLE("Unexpected WindowTag");
         }
@@ -493,16 +657,57 @@ struct range_window_clamper {
                    thrust::upper_bound(thrust::seq, begin + i, begin + end, begin[i], Comp{})) -
                  1;
         } else if constexpr (WindowTag != window_tag::UNBOUNDED) {
+          // The following endpoint is computed via row_value + delta.
+          // When delta is positive, this can only overflow towards +infinity.
+          // If we did overflow towards +infinity, then the value
+          // we're searching for is some max. But +infinity > max, so
+          // we must always use a `BOUNDED_CLOSED` window so that
+          // orderby = [..., max] with positive delta picks up that
+          // row in the window.
+          // Conversely, when delta is negative, we can only overflow
+          // towards -infinity. If we did overflow towards -infinity
+          // then the value we're searching for is some min. But
+          // -infinity < min, so we must use a `BOUNDED_OPEN` window
+          // so that orderby = [min, ...] with negative delta does not
+          // pick up that row in the window.
           OrderbyT value;
+          bool did_overflow{false};
+          bool delta_positive{*row_delta > DeltaT{0}};
           if constexpr (Order == order::ASCENDING) {
-            value = add_sat(begin[i], *row_delta);
+            auto const result = overflowing_add(begin[i], *row_delta);
+            value             = cuda::std::get<0>(result);
+            did_overflow      = cuda::std::get<1>(result);
           } else {
-            value = sub_sat(begin[i], *row_delta);
+            auto const result = overflowing_sub(begin[i], *row_delta);
+            value             = cuda::std::get<0>(result);
+            did_overflow      = cuda::std::get<1>(result);
           }
-          return thrust::distance(
-                   begin + i,
-                   thrust::upper_bound(thrust::seq, begin + start, begin + end, value, Comp{})) -
-                 1;
+          if (did_overflow) {
+            if (delta_positive) {
+              return thrust::distance(
+                       begin + i,
+                       thrust::upper_bound(thrust::seq,
+                                           begin + start,
+                                           begin + end,
+                                           value,
+                                           op_t<OrderbyT, window_tag::BOUNDED_CLOSED, Order>{})) -
+                     1;
+            } else {
+              return thrust::distance(
+                       begin + i,
+                       thrust::upper_bound(thrust::seq,
+                                           begin + start,
+                                           begin + end,
+                                           value,
+                                           op_t<OrderbyT, window_tag::BOUNDED_OPEN, Order>{})) -
+                     1;
+            }
+          } else {
+            return thrust::distance(
+                     begin + i,
+                     thrust::upper_bound(thrust::seq, begin + start, begin + end, value, Comp{})) -
+                   1;
+          }
         } else {
           CUDF_UNREACHABLE("Unexpected WindowTag");
         }
