@@ -457,8 +457,8 @@ __device__ inline auto compute_bounded(column_device_view::const_iterator<Orderb
  * See `saturating_sub` and `saturating_add` for details of the implementation of
  * saturating addition/subtraction.
  */
-template <direction Direction,
-          window_tag WindowTag,
+template <window_tag WindowTag,
+          direction Direction,
           cudf::order Order,
           typename Grouping,
           typename OrderbyT,
@@ -654,8 +654,8 @@ struct range_window_clamper {
       if (orderby.has_nulls()) {
         if (Direction == direction::PRECEDING) {
           if (Order == order::ASCENDING) {
-            copy_n(distance_kernel<direction::PRECEDING,
-                                   WindowTag,
+            copy_n(distance_kernel<WindowTag,
+                                   direction::PRECEDING,
                                    order::ASCENDING,
                                    grouped_with_nulls,
                                    OrderbyT,
@@ -667,8 +667,8 @@ struct range_window_clamper {
                                            d_begin,
                                            d_end});
           } else {
-            copy_n(distance_kernel<direction::PRECEDING,
-                                   WindowTag,
+            copy_n(distance_kernel<WindowTag,
+                                   direction::PRECEDING,
                                    order::DESCENDING,
                                    grouped_with_nulls,
                                    OrderbyT,
@@ -682,8 +682,8 @@ struct range_window_clamper {
           }
         } else {
           if (Order == order::ASCENDING) {
-            copy_n(distance_kernel<direction::FOLLOWING,
-                                   WindowTag,
+            copy_n(distance_kernel<WindowTag,
+                                   direction::FOLLOWING,
                                    order::ASCENDING,
                                    grouped_with_nulls,
                                    OrderbyT,
@@ -695,8 +695,8 @@ struct range_window_clamper {
                                            d_begin,
                                            d_end});
           } else {
-            copy_n(distance_kernel<direction::FOLLOWING,
-                                   WindowTag,
+            copy_n(distance_kernel<WindowTag,
+                                   direction::FOLLOWING,
                                    order::DESCENDING,
                                    grouped_with_nulls,
                                    OrderbyT,
@@ -713,8 +713,8 @@ struct range_window_clamper {
         if (Direction == direction::PRECEDING) {
           if (Order == order::ASCENDING) {
             copy_n(
-              distance_kernel<direction::PRECEDING,
-                              WindowTag,
+              distance_kernel<WindowTag,
+                              direction::PRECEDING,
                               order::ASCENDING,
                               grouped,
                               OrderbyT,
@@ -724,8 +724,8 @@ struct range_window_clamper {
                                       d_end});
           } else {
             copy_n(
-              distance_kernel<direction::PRECEDING,
-                              WindowTag,
+              distance_kernel<WindowTag,
+                              direction::PRECEDING,
                               order::DESCENDING,
                               grouped,
                               OrderbyT,
@@ -737,8 +737,8 @@ struct range_window_clamper {
         } else {
           if (Order == order::ASCENDING) {
             copy_n(
-              distance_kernel<direction::FOLLOWING,
-                              WindowTag,
+              distance_kernel<WindowTag,
+                              direction::FOLLOWING,
                               order::ASCENDING,
                               grouped,
                               OrderbyT,
@@ -748,8 +748,8 @@ struct range_window_clamper {
                                       d_end});
           } else {
             copy_n(
-              distance_kernel<direction::FOLLOWING,
-                              WindowTag,
+              distance_kernel<WindowTag,
+                              direction::FOLLOWING,
                               order::DESCENDING,
                               grouped,
                               OrderbyT,
@@ -764,8 +764,8 @@ struct range_window_clamper {
       if (orderby.has_nulls()) {
         if (Direction == direction::PRECEDING) {
           if (Order == order::ASCENDING) {
-            copy_n(distance_kernel<direction::PRECEDING,
-                                   WindowTag,
+            copy_n(distance_kernel<WindowTag,
+                                   direction::PRECEDING,
                                    order::ASCENDING,
                                    ungrouped_with_nulls,
                                    OrderbyT,
@@ -775,8 +775,8 @@ struct range_window_clamper {
               d_begin,
               d_end});
           } else {
-            copy_n(distance_kernel<direction::PRECEDING,
-                                   WindowTag,
+            copy_n(distance_kernel<WindowTag,
+                                   direction::PRECEDING,
                                    order::DESCENDING,
                                    ungrouped_with_nulls,
                                    OrderbyT,
@@ -788,8 +788,8 @@ struct range_window_clamper {
           }
         } else {
           if (Order == order::ASCENDING) {
-            copy_n(distance_kernel<direction::FOLLOWING,
-                                   WindowTag,
+            copy_n(distance_kernel<WindowTag,
+                                   direction::FOLLOWING,
                                    order::ASCENDING,
                                    ungrouped_with_nulls,
                                    OrderbyT,
@@ -799,8 +799,8 @@ struct range_window_clamper {
               d_begin,
               d_end});
           } else {
-            copy_n(distance_kernel<direction::FOLLOWING,
-                                   WindowTag,
+            copy_n(distance_kernel<WindowTag,
+                                   direction::FOLLOWING,
                                    order::DESCENDING,
                                    ungrouped_with_nulls,
                                    OrderbyT,
@@ -814,15 +814,15 @@ struct range_window_clamper {
       } else {
         if (Direction == direction::PRECEDING) {
           if (Order == order::ASCENDING) {
-            copy_n(distance_kernel<direction::PRECEDING,
-                                   WindowTag,
+            copy_n(distance_kernel<WindowTag,
+                                   direction::PRECEDING,
                                    order::ASCENDING,
                                    ungrouped,
                                    OrderbyT,
                                    DeltaT>{ungrouped{orderby.size()}, d_row_delta, d_begin, d_end});
           } else {
-            copy_n(distance_kernel<direction::PRECEDING,
-                                   WindowTag,
+            copy_n(distance_kernel<WindowTag,
+                                   direction::PRECEDING,
                                    order::DESCENDING,
                                    ungrouped,
                                    OrderbyT,
@@ -830,15 +830,15 @@ struct range_window_clamper {
           }
         } else {
           if (Order == order::ASCENDING) {
-            copy_n(distance_kernel<direction::FOLLOWING,
-                                   WindowTag,
+            copy_n(distance_kernel<WindowTag,
+                                   direction::FOLLOWING,
                                    order::ASCENDING,
                                    ungrouped,
                                    OrderbyT,
                                    DeltaT>{ungrouped{orderby.size()}, d_row_delta, d_begin, d_end});
           } else {
-            copy_n(distance_kernel<direction::FOLLOWING,
-                                   WindowTag,
+            copy_n(distance_kernel<WindowTag,
+                                   direction::FOLLOWING,
                                    order::DESCENDING,
                                    ungrouped,
                                    OrderbyT,
