@@ -607,8 +607,11 @@ struct distance_kernel {
  * @tparam WindowTag The tag indicating the type of window being computed
  * @tparam Order The sort order of the orderby column defining the window.
  */
-template <direction Direction, window_tag WindowTag, cudf::order Order>
+template <window_tag WindowTag>
 struct range_window_clamper {
+  direction Direction;
+  cudf::order Order;
+
   /**
    * @brief Compute the window bounds (possibly grouped) for an orderby column.
    *
@@ -649,28 +652,199 @@ struct range_window_clamper {
     };
     if (grouping.has_value()) {
       if (orderby.has_nulls()) {
-        copy_n(distance_kernel<Direction, WindowTag, Order, grouped_with_nulls, OrderbyT, DeltaT>{
-          grouped_with_nulls{nulls_at_start,
-                             grouping->labels.data(),
-                             grouping->offsets.data(),
-                             grouping->nulls_per_group.data()},
-          d_row_delta,
-          d_begin,
-          d_end});
+        if (Direction == direction::PRECEDING) {
+          if (Order == order::ASCENDING) {
+            copy_n(distance_kernel<direction::PRECEDING,
+                                   WindowTag,
+                                   order::ASCENDING,
+                                   grouped_with_nulls,
+                                   OrderbyT,
+                                   DeltaT>{grouped_with_nulls{nulls_at_start,
+                                                              grouping->labels.data(),
+                                                              grouping->offsets.data(),
+                                                              grouping->nulls_per_group.data()},
+                                           d_row_delta,
+                                           d_begin,
+                                           d_end});
+          } else {
+            copy_n(distance_kernel<direction::PRECEDING,
+                                   WindowTag,
+                                   order::DESCENDING,
+                                   grouped_with_nulls,
+                                   OrderbyT,
+                                   DeltaT>{grouped_with_nulls{nulls_at_start,
+                                                              grouping->labels.data(),
+                                                              grouping->offsets.data(),
+                                                              grouping->nulls_per_group.data()},
+                                           d_row_delta,
+                                           d_begin,
+                                           d_end});
+          }
+        } else {
+          if (Order == order::ASCENDING) {
+            copy_n(distance_kernel<direction::FOLLOWING,
+                                   WindowTag,
+                                   order::ASCENDING,
+                                   grouped_with_nulls,
+                                   OrderbyT,
+                                   DeltaT>{grouped_with_nulls{nulls_at_start,
+                                                              grouping->labels.data(),
+                                                              grouping->offsets.data(),
+                                                              grouping->nulls_per_group.data()},
+                                           d_row_delta,
+                                           d_begin,
+                                           d_end});
+          } else {
+            copy_n(distance_kernel<direction::FOLLOWING,
+                                   WindowTag,
+                                   order::DESCENDING,
+                                   grouped_with_nulls,
+                                   OrderbyT,
+                                   DeltaT>{grouped_with_nulls{nulls_at_start,
+                                                              grouping->labels.data(),
+                                                              grouping->offsets.data(),
+                                                              grouping->nulls_per_group.data()},
+                                           d_row_delta,
+                                           d_begin,
+                                           d_end});
+          }
+        }
       } else {
-        copy_n(distance_kernel<Direction, WindowTag, Order, grouped, OrderbyT, DeltaT>{
-          grouped{grouping->labels.data(), grouping->offsets.data()}, d_row_delta, d_begin, d_end});
+        if (Direction == direction::PRECEDING) {
+          if (Order == order::ASCENDING) {
+            copy_n(
+              distance_kernel<direction::PRECEDING,
+                              WindowTag,
+                              order::ASCENDING,
+                              grouped,
+                              OrderbyT,
+                              DeltaT>{grouped{grouping->labels.data(), grouping->offsets.data()},
+                                      d_row_delta,
+                                      d_begin,
+                                      d_end});
+          } else {
+            copy_n(
+              distance_kernel<direction::PRECEDING,
+                              WindowTag,
+                              order::DESCENDING,
+                              grouped,
+                              OrderbyT,
+                              DeltaT>{grouped{grouping->labels.data(), grouping->offsets.data()},
+                                      d_row_delta,
+                                      d_begin,
+                                      d_end});
+          }
+        } else {
+          if (Order == order::ASCENDING) {
+            copy_n(
+              distance_kernel<direction::FOLLOWING,
+                              WindowTag,
+                              order::ASCENDING,
+                              grouped,
+                              OrderbyT,
+                              DeltaT>{grouped{grouping->labels.data(), grouping->offsets.data()},
+                                      d_row_delta,
+                                      d_begin,
+                                      d_end});
+          } else {
+            copy_n(
+              distance_kernel<direction::FOLLOWING,
+                              WindowTag,
+                              order::DESCENDING,
+                              grouped,
+                              OrderbyT,
+                              DeltaT>{grouped{grouping->labels.data(), grouping->offsets.data()},
+                                      d_row_delta,
+                                      d_begin,
+                                      d_end});
+          }
+        }
       }
     } else {
       if (orderby.has_nulls()) {
-        copy_n(distance_kernel<Direction, WindowTag, Order, ungrouped_with_nulls, OrderbyT, DeltaT>{
-          ungrouped_with_nulls{nulls_at_start, orderby.size(), orderby.null_count()},
-          d_row_delta,
-          d_begin,
-          d_end});
+        if (Direction == direction::PRECEDING) {
+          if (Order == order::ASCENDING) {
+            copy_n(distance_kernel<direction::PRECEDING,
+                                   WindowTag,
+                                   order::ASCENDING,
+                                   ungrouped_with_nulls,
+                                   OrderbyT,
+                                   DeltaT>{
+              ungrouped_with_nulls{nulls_at_start, orderby.size(), orderby.null_count()},
+              d_row_delta,
+              d_begin,
+              d_end});
+          } else {
+            copy_n(distance_kernel<direction::PRECEDING,
+                                   WindowTag,
+                                   order::DESCENDING,
+                                   ungrouped_with_nulls,
+                                   OrderbyT,
+                                   DeltaT>{
+              ungrouped_with_nulls{nulls_at_start, orderby.size(), orderby.null_count()},
+              d_row_delta,
+              d_begin,
+              d_end});
+          }
+        } else {
+          if (Order == order::ASCENDING) {
+            copy_n(distance_kernel<direction::FOLLOWING,
+                                   WindowTag,
+                                   order::ASCENDING,
+                                   ungrouped_with_nulls,
+                                   OrderbyT,
+                                   DeltaT>{
+              ungrouped_with_nulls{nulls_at_start, orderby.size(), orderby.null_count()},
+              d_row_delta,
+              d_begin,
+              d_end});
+          } else {
+            copy_n(distance_kernel<direction::FOLLOWING,
+                                   WindowTag,
+                                   order::DESCENDING,
+                                   ungrouped_with_nulls,
+                                   OrderbyT,
+                                   DeltaT>{
+              ungrouped_with_nulls{nulls_at_start, orderby.size(), orderby.null_count()},
+              d_row_delta,
+              d_begin,
+              d_end});
+          }
+        }
       } else {
-        copy_n(distance_kernel<Direction, WindowTag, Order, ungrouped, OrderbyT, DeltaT>{
-          ungrouped{orderby.size()}, d_row_delta, d_begin, d_end});
+        if (Direction == direction::PRECEDING) {
+          if (Order == order::ASCENDING) {
+            copy_n(distance_kernel<direction::PRECEDING,
+                                   WindowTag,
+                                   order::ASCENDING,
+                                   ungrouped,
+                                   OrderbyT,
+                                   DeltaT>{ungrouped{orderby.size()}, d_row_delta, d_begin, d_end});
+          } else {
+            copy_n(distance_kernel<direction::PRECEDING,
+                                   WindowTag,
+                                   order::DESCENDING,
+                                   ungrouped,
+                                   OrderbyT,
+                                   DeltaT>{ungrouped{orderby.size()}, d_row_delta, d_begin, d_end});
+          }
+        } else {
+          if (Order == order::ASCENDING) {
+            copy_n(distance_kernel<direction::FOLLOWING,
+                                   WindowTag,
+                                   order::ASCENDING,
+                                   ungrouped,
+                                   OrderbyT,
+                                   DeltaT>{ungrouped{orderby.size()}, d_row_delta, d_begin, d_end});
+          } else {
+            copy_n(distance_kernel<direction::FOLLOWING,
+                                   WindowTag,
+                                   order::DESCENDING,
+                                   ungrouped,
+                                   OrderbyT,
+                                   DeltaT>{ungrouped{orderby.size()}, d_row_delta, d_begin, d_end});
+          }
+        }
       }
     }
     return result;
@@ -815,44 +989,42 @@ template <rolling::direction Direction>
       [&](bounded_closed win) {
         if (order == order::ASCENDING) {
           return dispatch(
-            rolling::range_window_clamper<Direction, tag_t::BOUNDED_CLOSED, order::ASCENDING>{},
+            rolling::range_window_clamper<tag_t::BOUNDED_CLOSED>{Direction, order::ASCENDING},
             &win.delta);
         } else {
           return dispatch(
-            rolling::range_window_clamper<Direction, tag_t::BOUNDED_CLOSED, order::DESCENDING>{},
+            rolling::range_window_clamper<tag_t::BOUNDED_CLOSED>{Direction, order::DESCENDING},
             &win.delta);
         }
       },
       [&](bounded_open win) {
         if (order == order::ASCENDING) {
           return dispatch(
-            rolling::range_window_clamper<Direction, tag_t::BOUNDED_OPEN, order::ASCENDING>{},
+            rolling::range_window_clamper<tag_t::BOUNDED_OPEN>{Direction, order::ASCENDING},
             &win.delta);
         } else {
           return dispatch(
-            rolling::range_window_clamper<Direction, tag_t::BOUNDED_OPEN, order::DESCENDING>{},
+            rolling::range_window_clamper<tag_t::BOUNDED_OPEN>{Direction, order::DESCENDING},
             &win.delta);
         }
       },
       [&](unbounded) {
         if (order == order::ASCENDING) {
           return dispatch(
-            rolling::range_window_clamper<Direction, tag_t::UNBOUNDED, order::ASCENDING>{},
-            nullptr);
+            rolling::range_window_clamper<tag_t::UNBOUNDED>{Direction, order::ASCENDING}, nullptr);
         } else {
           return dispatch(
-            rolling::range_window_clamper<Direction, tag_t::UNBOUNDED, order::DESCENDING>{},
-            nullptr);
+            rolling::range_window_clamper<tag_t::UNBOUNDED>{Direction, order::DESCENDING}, nullptr);
         }
       },
       [&](current_row) {
         if (order == order::ASCENDING) {
           return dispatch(
-            rolling::range_window_clamper<Direction, tag_t::CURRENT_ROW, order::ASCENDING>{},
+            rolling::range_window_clamper<tag_t::CURRENT_ROW>{Direction, order::ASCENDING},
             nullptr);
         } else {
           return dispatch(
-            rolling::range_window_clamper<Direction, tag_t::CURRENT_ROW, order::DESCENDING>{},
+            rolling::range_window_clamper<tag_t::CURRENT_ROW>{Direction, order::DESCENDING},
             nullptr);
         }
       },
