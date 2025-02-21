@@ -438,22 +438,20 @@ template <typename T, typename V>
  * See `saturating_sub` and `saturating_add` for details of the implementation of
  * saturating addition/subtraction.
  */
-template <window_tag WindowTag,
-          cudf::order Order,
-          typename Grouping,
-          typename OrderbyT,
-          typename DeltaT>
+template <window_tag WindowTag, typename Grouping, typename OrderbyT, typename DeltaT>
 struct distance_kernel {
   distance_kernel(direction dir,
+                  cudf::order Order,
                   Grouping groups,
                   DeltaT const* row_delta,
                   column_device_view::const_iterator<OrderbyT> begin,
                   column_device_view::const_iterator<OrderbyT> end)
-    : dir{dir}, groups{groups}, row_delta{row_delta}, begin{begin}, end{end}
+    : dir{dir}, Order{Order}, groups{groups}, row_delta{row_delta}, begin{begin}, end{end}
   {
   }
-  direction dir;    ///< Direction of the window
-  Grouping groups;  ///< Group information to determine bounds on current row's window
+  cudf::order Order;  ///< Order of the orderby column
+  direction dir;      ///< Direction of the window
+  Grouping groups;    ///< Group information to determine bounds on current row's window
   static_assert(cuda::std::is_same_v<Grouping, ungrouped> ||
                   cuda::std::is_same_v<Grouping, grouped> ||
                   cuda::std::is_same_v<Grouping, ungrouped_with_nulls> ||
@@ -502,18 +500,48 @@ struct distance_kernel {
       }
     }
 
-    using Comp = comparator_t<OrderbyT, window_tag::CURRENT_ROW, Order>;
     if (is_preceding) {
-      return 1 + thrust::distance(
-                   thrust::lower_bound(
-                     thrust::seq, this->begin + start, this->begin + i, this->begin[i], Comp{}),
-                   this->begin + i);
+      if (Order == order::ASCENDING) {
+        return 1 + thrust::distance(
+                     thrust::lower_bound(
+                       thrust::seq,
+                       this->begin + start,
+                       this->begin + i,
+                       this->begin[i],
+                       comparator_t<OrderbyT, window_tag::CURRENT_ROW, order::ASCENDING>{}),
+                     this->begin + i);
+      } else {
+        return 1 + thrust::distance(
+                     thrust::lower_bound(
+                       thrust::seq,
+                       this->begin + start,
+                       this->begin + i,
+                       this->begin[i],
+                       comparator_t<OrderbyT, window_tag::CURRENT_ROW, order::DESCENDING>{}),
+                     this->begin + i);
+      }
     } else {
-      return thrust::distance(
-               this->begin + i,
-               thrust::upper_bound(
-                 thrust::seq, this->begin + i, this->begin + end, this->begin[i], Comp{})) -
-             1;
+      if (Order == order::ASCENDING) {
+        return thrust::distance(
+                 this->begin + i,
+                 thrust::upper_bound(
+                   thrust::seq,
+                   this->begin + i,
+                   this->begin + end,
+                   this->begin[i],
+                   comparator_t<OrderbyT, window_tag::CURRENT_ROW, order::ASCENDING>{})) -
+               1;
+      } else {
+        return thrust::distance(
+                 this->begin + i,
+                 thrust::upper_bound(
+                   thrust::seq,
+                   this->begin + i,
+                   this->begin + end,
+                   this->begin[i],
+                   comparator_t<OrderbyT, window_tag::CURRENT_ROW, order::DESCENDING>{})) -
+               1;
+      }
     }
   }
 
@@ -521,7 +549,6 @@ struct distance_kernel {
             CUDF_ENABLE_IF(W == window_tag::BOUNDED_OPEN || W == window_tag::BOUNDED_CLOSED)>
   [[nodiscard]] __device__ size_type operator()(size_type i) const
   {
-    using Comp = comparator_t<OrderbyT, WindowTag, Order>;
     auto const [null_count, group_start, group_end, null_start, null_end, start, end] =
       this->groups.row_info(i);
 
@@ -602,24 +629,54 @@ struct distance_kernel {
 
     if (did_overflow) {
       if (*row_delta > DeltaT{0}) {
-        return compute_bounded(begin,
-                               i,
-                               start,
-                               end,
-                               value,
-                               comparator_t<OrderbyT, window_tag::BOUNDED_CLOSED, Order>{},
-                               dir);
+        if (Order == order::ASCENDING) {
+          return compute_bounded(
+            begin,
+            i,
+            start,
+            end,
+            value,
+            comparator_t<OrderbyT, window_tag::BOUNDED_CLOSED, order::ASCENDING>{},
+            dir);
+        } else {
+          return compute_bounded(
+            begin,
+            i,
+            start,
+            end,
+            value,
+            comparator_t<OrderbyT, window_tag::BOUNDED_CLOSED, order::DESCENDING>{},
+            dir);
+        }
       } else {
-        return compute_bounded(begin,
-                               i,
-                               start,
-                               end,
-                               value,
-                               comparator_t<OrderbyT, window_tag::BOUNDED_OPEN, Order>{},
-                               dir);
+        if (Order == order::ASCENDING) {
+          return compute_bounded(
+            begin,
+            i,
+            start,
+            end,
+            value,
+            comparator_t<OrderbyT, window_tag::BOUNDED_OPEN, order::ASCENDING>{},
+            dir);
+        } else {
+          return compute_bounded(
+            begin,
+            i,
+            start,
+            end,
+            value,
+            comparator_t<OrderbyT, window_tag::BOUNDED_OPEN, order::DESCENDING>{},
+            dir);
+        }
       }
     } else {
-      return compute_bounded(begin, i, start, end, value, Comp{}, dir);
+      if (Order == order::ASCENDING) {
+        return compute_bounded(
+          begin, i, start, end, value, comparator_t<OrderbyT, WindowTag, order::ASCENDING>{}, dir);
+      } else {
+        return compute_bounded(
+          begin, i, start, end, value, comparator_t<OrderbyT, WindowTag, order::DESCENDING>{}, dir);
+      }
     }
   }
   template <window_tag W = WindowTag,
@@ -683,72 +740,37 @@ struct range_window_clamper {
     };
     if (grouping.has_value()) {
       if (orderby.has_nulls()) {
-        if (Order == order::ASCENDING) {
-          copy_n(distance_kernel<WindowTag, order::ASCENDING, grouped_with_nulls, OrderbyT, DeltaT>{
-            Direction,
-            grouped_with_nulls{nulls_at_start,
-                               grouping->labels.data(),
-                               grouping->offsets.data(),
-                               grouping->nulls_per_group.data()},
-            d_row_delta,
-            d_begin,
-            d_end});
-        } else {
-          copy_n(
-            distance_kernel<WindowTag, order::DESCENDING, grouped_with_nulls, OrderbyT, DeltaT>{
-              Direction,
-              grouped_with_nulls{nulls_at_start,
-                                 grouping->labels.data(),
-                                 grouping->offsets.data(),
-                                 grouping->nulls_per_group.data()},
-              d_row_delta,
-              d_begin,
-              d_end});
-        }
+        copy_n(distance_kernel<WindowTag, grouped_with_nulls, OrderbyT, DeltaT>{
+          Direction,
+          Order,
+          grouped_with_nulls{nulls_at_start,
+                             grouping->labels.data(),
+                             grouping->offsets.data(),
+                             grouping->nulls_per_group.data()},
+          d_row_delta,
+          d_begin,
+          d_end});
       } else {
-        if (Order == order::ASCENDING) {
-          copy_n(distance_kernel<WindowTag, order::ASCENDING, grouped, OrderbyT, DeltaT>{
-            Direction,
-            grouped{grouping->labels.data(), grouping->offsets.data()},
-            d_row_delta,
-            d_begin,
-            d_end});
-        } else {
-          copy_n(distance_kernel<WindowTag, order::DESCENDING, grouped, OrderbyT, DeltaT>{
-            Direction,
-            grouped{grouping->labels.data(), grouping->offsets.data()},
-            d_row_delta,
-            d_begin,
-            d_end});
-        }
+        copy_n(distance_kernel<WindowTag, grouped, OrderbyT, DeltaT>{
+          Direction,
+          Order,
+          grouped{grouping->labels.data(), grouping->offsets.data()},
+          d_row_delta,
+          d_begin,
+          d_end});
       }
     } else {
       if (orderby.has_nulls()) {
-        if (Order == order::ASCENDING) {
-          copy_n(
-            distance_kernel<WindowTag, order::ASCENDING, ungrouped_with_nulls, OrderbyT, DeltaT>{
-              Direction,
-              ungrouped_with_nulls{nulls_at_start, orderby.size(), orderby.null_count()},
-              d_row_delta,
-              d_begin,
-              d_end});
-        } else {
-          copy_n(
-            distance_kernel<WindowTag, order::DESCENDING, ungrouped_with_nulls, OrderbyT, DeltaT>{
-              Direction,
-              ungrouped_with_nulls{nulls_at_start, orderby.size(), orderby.null_count()},
-              d_row_delta,
-              d_begin,
-              d_end});
-        }
+        copy_n(distance_kernel<WindowTag, ungrouped_with_nulls, OrderbyT, DeltaT>{
+          Direction,
+          Order,
+          ungrouped_with_nulls{nulls_at_start, orderby.size(), orderby.null_count()},
+          d_row_delta,
+          d_begin,
+          d_end});
       } else {
-        if (Order == order::ASCENDING) {
-          copy_n(distance_kernel<WindowTag, order::ASCENDING, ungrouped, OrderbyT, DeltaT>{
-            Direction, ungrouped{orderby.size()}, d_row_delta, d_begin, d_end});
-        } else {
-          copy_n(distance_kernel<WindowTag, order::DESCENDING, ungrouped, OrderbyT, DeltaT>{
-            Direction, ungrouped{orderby.size()}, d_row_delta, d_begin, d_end});
-        }
+        copy_n(distance_kernel<WindowTag, ungrouped, OrderbyT, DeltaT>{
+          Direction, Order, ungrouped{orderby.size()}, d_row_delta, d_begin, d_end});
       }
     }
     return result;
