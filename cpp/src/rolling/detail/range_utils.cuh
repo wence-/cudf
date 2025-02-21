@@ -433,6 +433,174 @@ __device__ inline auto compute_bounded(column_device_view::const_iterator<Orderb
 };
 
 /**
+ * @brief Functor to compute distance from a given row to the edge
+ * of the window.
+ *
+ * @tparam Grouping Object defining how the orderby column is
+ * grouped.
+ * @tparam OrderbyT Type of elements in the orderby columns.
+ * @tparam DeltaT Type of the elements in the scalar delta (returned
+ * by scalar.data()).
+ * @param groups The grouping object.
+ * @param row_delta Pointer to row delta on device.
+ * @param begin Iterator to begin of orderby column on device.
+ * @param end Iterator to end of orderby column on device.
+ *
+ * @note Let `x` be the value of the current row and `delta` the provided
+ * row delta then for bounded windows the endpoints are computed as follows.
+ *
+ *           | ASCENDING | DESCENDING
+ * ----------+-----------+-----------
+ * PRECEDING | x - delta | x + delta
+ * FOLLOWING | x + delta | x - delta
+ *
+ * See `saturating_sub` and `saturating_add` for details of the implementation of
+ * saturating addition/subtraction.
+ */
+template <direction Direction,
+          window_tag WindowTag,
+          cudf::order Order,
+          typename Grouping,
+          typename OrderbyT,
+          typename DeltaT>
+struct distance_kernel {
+  distance_kernel(Grouping groups,
+                  DeltaT const* row_delta,
+                  column_device_view::const_iterator<OrderbyT> begin,
+                  column_device_view::const_iterator<OrderbyT> end)
+    : groups{groups}, row_delta{row_delta}, begin{begin}, end{end}
+  {
+  }
+  Grouping groups;  ///< Group information to determine bounds on current row's window
+  static_assert(cuda::std::is_same_v<Grouping, ungrouped> ||
+                  cuda::std::is_same_v<Grouping, grouped> ||
+                  cuda::std::is_same_v<Grouping, ungrouped_with_nulls> ||
+                  cuda::std::is_same_v<Grouping, grouped_with_nulls>,
+                "Invalid grouping descriptor");
+  DeltaT const* row_delta;  ///< Delta from current row that defines the interval endpoint. This
+                            ///< pointer is null for UNBOUNDED and CURRENT_ROW windows.
+  column_device_view::const_iterator<OrderbyT> begin;  ///< Iterator to beginning of orderby column
+  column_device_view::const_iterator<OrderbyT> end;    ///< Iterator to end of orderby column
+
+  /**
+   * @brief Compute the offset to the end of the window.
+   *
+   * @param i The current row index.
+   * @return Offset to the current row's window endpoint.
+   */
+  [[nodiscard]] __device__ size_type operator()(size_type i) const
+  {
+    using Comp      = comparator_t<OrderbyT, WindowTag, Order>;
+    auto const info = groups.row_info(i);
+    auto const [null_count, group_start, group_end, null_start, null_end, start, end] =
+      groups.row_info(i);
+
+    constexpr auto is_preceding = Direction == direction::PRECEDING;
+
+    if constexpr (WindowTag == window_tag::UNBOUNDED) {
+      if constexpr (is_preceding) {
+        return i - group_start + 1;
+      } else {
+        return group_end - i - 1;
+      }
+    }
+
+    if (Grouping::has_nulls && i >= null_start && i < null_end) {
+      // TODO: If the window is BOUNDED_OPEN, what does it mean for a row to fall in the null
+      // group? Not that important because only spark allows nulls in the orderby column, and it
+      // doesn't have BOUNDED_OPEN windows.
+      if constexpr (is_preceding) {
+        return i - null_start + 1;
+      } else {
+        return null_end - i - 1;
+      }
+    }
+
+    if constexpr (WindowTag == window_tag::CURRENT_ROW) {
+      if constexpr (is_preceding) {
+        return 1 + thrust::distance(
+                     thrust::lower_bound(thrust::seq, begin + start, begin + i, begin[i], Comp{}),
+                     begin + i);
+      } else {
+        return thrust::distance(
+                 begin + i,
+                 thrust::upper_bound(thrust::seq, begin + i, begin + end, begin[i], Comp{})) -
+               1;
+      }
+    }
+
+    // At this point we are guaranteed that the window is either BOUNDED_OPEN
+    // or BOUNDED_CLOSED, but we need to tell the compiler that explicitly.
+    if constexpr (WindowTag == window_tag::BOUNDED_CLOSED ||
+                  WindowTag == window_tag::BOUNDED_OPEN) {
+      // TODO: Combine the below two comments to be accurate for both the
+      // preceding and following cases.
+
+      // The preceding endpoint is computed via row_value - delta.
+      // When delta is positive, this can only overflow towards -infinity.
+      // If we did overflow towards -infinity, then the value
+      // we're searching for is some min. But -infinity < min, so
+      // we must always use a `BOUNDED_CLOSED` window so that
+      // orderby = [min, ...] with positive delta picks up that
+      // row in the window.
+      // Conversely, when delta is negative, we can only overflow
+      // towards +infinity. If we did overflow towards +infinity
+      // then the value we're searching for is some max. But
+      // +infinity > max, so we must use a `BOUNDED_OPEN` window
+      // so that orderby = [..., max] with negative delta does not
+      // pick up that row in the window.
+      // When the orderby column is sorted in descending order the
+      // above applies mutatis mutandis with a sign flip.
+
+      // The following endpoint is computed via row_value + delta.
+      // When delta is positive, this can only overflow towards +infinity.
+      // If we did overflow towards +infinity, then the value
+      // we're searching for is some max. But +infinity > max, so
+      // we must always use a `BOUNDED_CLOSED` window so that
+      // orderby = [..., max] with positive delta picks up that
+      // row in the window.
+      // Conversely, when delta is negative, we can only overflow
+      // towards -infinity. If we did overflow towards -infinity
+      // then the value we're searching for is some min. But
+      // -infinity < min, so we must use a `BOUNDED_OPEN` window
+      // so that orderby = [min, ...] with negative delta does not
+      // pick up that row in the window.
+      // When the orderby column is sorted in descending order the
+      // above applies mutatis mutandis with a sign flip.
+      auto const result = [&] {
+        if constexpr ((Order == order::ASCENDING) && (Direction == direction::PRECEDING) ||
+                      (Order == order::DESCENDING) && (Direction == direction::FOLLOWING)) {
+          return saturating_sub(begin[i], *row_delta);
+        } else {
+          return saturating_add(begin[i], *row_delta);
+        }
+      }();
+      auto const value        = cuda::std::get<0>(result);
+      auto const did_overflow = cuda::std::get<1>(result);
+
+      if (did_overflow) {
+        if (*row_delta > DeltaT{0}) {
+          return compute_bounded<Direction>(
+            begin,
+            i,
+            start,
+            end,
+            value,
+            comparator_t<OrderbyT, window_tag::BOUNDED_CLOSED, Order>{});
+        } else {
+          return compute_bounded<Direction>(
+            begin, i, start, end, value, comparator_t<OrderbyT, window_tag::BOUNDED_OPEN, Order>{});
+        }
+      } else {
+        return compute_bounded<Direction>(begin, i, start, end, value, Comp{});
+      }
+    } else {
+      CUDF_UNREACHABLE("hello");
+    }
+  }
+};
+
+/**
  * @brief Functor to dispatch computation of clamped range-based rolling window bounds.
  *
  * @tparam Direction The direction (preceding or following) of the window
@@ -441,175 +609,6 @@ __device__ inline auto compute_bounded(column_device_view::const_iterator<Orderb
  */
 template <direction Direction, window_tag WindowTag, cudf::order Order>
 struct range_window_clamper {
-  /**
-   * @brief Functor to compute distance from a given row to the edge
-   * of the window.
-   *
-   * @tparam Grouping Object defining how the orderby column is
-   * grouped.
-   * @tparam OrderbyT Type of elements in the orderby columns.
-   * @tparam DeltaT Type of the elements in the scalar delta (returned
-   * by scalar.data()).
-   * @param groups The grouping object.
-   * @param row_delta Pointer to row delta on device.
-   * @param begin Iterator to begin of orderby column on device.
-   * @param end Iterator to end of orderby column on device.
-   *
-   * @note Let `x` be the value of the current row and `delta` the provided
-   * row delta then for bounded windows the endpoints are computed as follows.
-   *
-   *           | ASCENDING | DESCENDING
-   * ----------+-----------+-----------
-   * PRECEDING | x - delta | x + delta
-   * FOLLOWING | x + delta | x - delta
-   *
-   * See `saturating_sub` and `saturating_add` for details of the implementation of
-   * saturating addition/subtraction.
-   */
-  template <typename Grouping, typename OrderbyT, typename DeltaT>
-  struct distance_kernel {
-    distance_kernel(Grouping groups,
-                    DeltaT const* row_delta,
-                    column_device_view::const_iterator<OrderbyT> begin,
-                    column_device_view::const_iterator<OrderbyT> end)
-      : groups{groups}, row_delta{row_delta}, begin{begin}, end{end}
-    {
-    }
-    Grouping groups;  ///< Group information to determine bounds on current row's window
-    static_assert(cuda::std::is_same_v<Grouping, ungrouped> ||
-                    cuda::std::is_same_v<Grouping, grouped> ||
-                    cuda::std::is_same_v<Grouping, ungrouped_with_nulls> ||
-                    cuda::std::is_same_v<Grouping, grouped_with_nulls>,
-                  "Invalid grouping descriptor");
-    DeltaT const* row_delta;  ///< Delta from current row that defines the interval endpoint. This
-                              ///< pointer is null for UNBOUNDED and CURRENT_ROW windows.
-    column_device_view::const_iterator<OrderbyT>
-      begin;                                           ///< Iterator to beginning of orderby column
-    column_device_view::const_iterator<OrderbyT> end;  ///< Iterator to end of orderby column
-
-    /**
-     * @brief Compute the offset to the end of the window.
-     *
-     * @param i The current row index.
-     * @return Offset to the current row's window endpoint.
-     */
-    [[nodiscard]] __device__ size_type operator()(size_type i) const
-    {
-      using Comp      = comparator_t<OrderbyT, WindowTag, Order>;
-      auto const info = groups.row_info(i);
-      auto const [null_count, group_start, group_end, null_start, null_end, start, end] =
-        groups.row_info(i);
-
-      constexpr auto is_preceding = Direction == direction::PRECEDING;
-
-      if constexpr (WindowTag == window_tag::UNBOUNDED) {
-        if constexpr (is_preceding) {
-          return i - group_start + 1;
-        } else {
-          return group_end - i - 1;
-        }
-      }
-
-      if (Grouping::has_nulls && i >= null_start && i < null_end) {
-        // TODO: If the window is BOUNDED_OPEN, what does it mean for a row to fall in the null
-        // group? Not that important because only spark allows nulls in the orderby column, and it
-        // doesn't have BOUNDED_OPEN windows.
-        if constexpr (is_preceding) {
-          return i - null_start + 1;
-        } else {
-          return null_end - i - 1;
-        }
-      }
-
-      if constexpr (WindowTag == window_tag::CURRENT_ROW) {
-        if constexpr (is_preceding) {
-          return 1 + thrust::distance(
-                       thrust::lower_bound(thrust::seq, begin + start, begin + i, begin[i], Comp{}),
-                       begin + i);
-        } else {
-          return thrust::distance(
-                   begin + i,
-                   thrust::upper_bound(thrust::seq, begin + i, begin + end, begin[i], Comp{})) -
-                 1;
-        }
-      }
-
-      // At this point we are guaranteed that the window is either BOUNDED_OPEN
-      // or BOUNDED_CLOSED, but we need to tell the compiler that explicitly.
-      if constexpr (WindowTag == window_tag::BOUNDED_CLOSED ||
-                    WindowTag == window_tag::BOUNDED_OPEN) {
-        // TODO: Combine the below two comments to be accurate for both the
-        // preceding and following cases.
-
-        // The preceding endpoint is computed via row_value - delta.
-        // When delta is positive, this can only overflow towards -infinity.
-        // If we did overflow towards -infinity, then the value
-        // we're searching for is some min. But -infinity < min, so
-        // we must always use a `BOUNDED_CLOSED` window so that
-        // orderby = [min, ...] with positive delta picks up that
-        // row in the window.
-        // Conversely, when delta is negative, we can only overflow
-        // towards +infinity. If we did overflow towards +infinity
-        // then the value we're searching for is some max. But
-        // +infinity > max, so we must use a `BOUNDED_OPEN` window
-        // so that orderby = [..., max] with negative delta does not
-        // pick up that row in the window.
-        // When the orderby column is sorted in descending order the
-        // above applies mutatis mutandis with a sign flip.
-
-        // The following endpoint is computed via row_value + delta.
-        // When delta is positive, this can only overflow towards +infinity.
-        // If we did overflow towards +infinity, then the value
-        // we're searching for is some max. But +infinity > max, so
-        // we must always use a `BOUNDED_CLOSED` window so that
-        // orderby = [..., max] with positive delta picks up that
-        // row in the window.
-        // Conversely, when delta is negative, we can only overflow
-        // towards -infinity. If we did overflow towards -infinity
-        // then the value we're searching for is some min. But
-        // -infinity < min, so we must use a `BOUNDED_OPEN` window
-        // so that orderby = [min, ...] with negative delta does not
-        // pick up that row in the window.
-        // When the orderby column is sorted in descending order the
-        // above applies mutatis mutandis with a sign flip.
-        auto const result = [&] {
-          if constexpr ((Order == order::ASCENDING) && (Direction == direction::PRECEDING) ||
-                        (Order == order::DESCENDING) && (Direction == direction::FOLLOWING)) {
-            return saturating_sub(begin[i], *row_delta);
-          } else {
-            return saturating_add(begin[i], *row_delta);
-          }
-        }();
-        auto const value        = cuda::std::get<0>(result);
-        auto const did_overflow = cuda::std::get<1>(result);
-
-        if (did_overflow) {
-          if (*row_delta > DeltaT{0}) {
-            return compute_bounded<Direction>(
-              begin,
-              i,
-              start,
-              end,
-              value,
-              comparator_t<OrderbyT, window_tag::BOUNDED_CLOSED, Order>{});
-          } else {
-            return compute_bounded<Direction>(
-              begin,
-              i,
-              start,
-              end,
-              value,
-              comparator_t<OrderbyT, window_tag::BOUNDED_OPEN, Order>{});
-          }
-        } else {
-          return compute_bounded<Direction>(begin, i, start, end, value, Comp{});
-        }
-      } else {
-        CUDF_UNREACHABLE("hello");
-      }
-    }
-  };
-
   /**
    * @brief Compute the window bounds (possibly grouped) for an orderby column.
    *
@@ -641,6 +640,7 @@ struct range_window_clamper {
     auto d_begin            = d_orderby->begin<OrderbyT>();
     auto d_end              = d_orderby->end<OrderbyT>();
     auto const* d_row_delta = row_delta ? dynamic_cast<ScalarT const*>(row_delta)->data() : nullptr;
+    using DeltaT            = std::remove_cv_t<std::remove_pointer_t<decltype(d_row_delta)>>;
     auto copy_n             = [&](auto&& kernel) {
       thrust::copy_n(rmm::exec_policy_nosync(stream),
                      cudf::detail::make_counting_transform_iterator(0, kernel),
@@ -649,26 +649,28 @@ struct range_window_clamper {
     };
     if (grouping.has_value()) {
       if (orderby.has_nulls()) {
-        copy_n(distance_kernel{grouped_with_nulls{nulls_at_start,
-                                                  grouping->labels.data(),
-                                                  grouping->offsets.data(),
-                                                  grouping->nulls_per_group.data()},
-                               d_row_delta,
-                               d_begin,
-                               d_end});
+        copy_n(distance_kernel<Direction, WindowTag, Order, grouped_with_nulls, OrderbyT, DeltaT>{
+          grouped_with_nulls{nulls_at_start,
+                             grouping->labels.data(),
+                             grouping->offsets.data(),
+                             grouping->nulls_per_group.data()},
+          d_row_delta,
+          d_begin,
+          d_end});
       } else {
-        copy_n(distance_kernel{
+        copy_n(distance_kernel<Direction, WindowTag, Order, grouped, OrderbyT, DeltaT>{
           grouped{grouping->labels.data(), grouping->offsets.data()}, d_row_delta, d_begin, d_end});
       }
     } else {
       if (orderby.has_nulls()) {
-        copy_n(distance_kernel{
+        copy_n(distance_kernel<Direction, WindowTag, Order, ungrouped_with_nulls, OrderbyT, DeltaT>{
           ungrouped_with_nulls{nulls_at_start, orderby.size(), orderby.null_count()},
           d_row_delta,
           d_begin,
           d_end});
       } else {
-        copy_n(distance_kernel{ungrouped{orderby.size()}, d_row_delta, d_begin, d_end});
+        copy_n(distance_kernel<Direction, WindowTag, Order, ungrouped, OrderbyT, DeltaT>{
+          ungrouped{orderby.size()}, d_row_delta, d_begin, d_end});
       }
     }
     return result;
