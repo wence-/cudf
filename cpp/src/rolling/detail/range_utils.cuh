@@ -488,22 +488,26 @@ struct distance_kernel {
    * @param i The current row index.
    * @return Offset to the current row's window endpoint.
    */
+  template <window_tag W = WindowTag, CUDF_ENABLE_IF(W == window_tag::UNBOUNDED)>
   [[nodiscard]] __device__ size_type operator()(size_type i) const
   {
-    using Comp      = comparator_t<OrderbyT, WindowTag, Order>;
-    auto const info = groups.row_info(i);
     auto const [null_count, group_start, group_end, null_start, null_end, start, end] =
-      groups.row_info(i);
+      this->groups.row_info(i);
+
+    if constexpr (Direction == direction::PRECEDING) {
+      return i - group_start + 1;
+    } else {
+      return group_end - i - 1;
+    }
+  }
+
+  template <window_tag W = WindowTag, CUDF_ENABLE_IF(W == window_tag::CURRENT_ROW)>
+  [[nodiscard]] __device__ size_type operator()(size_type i) const
+  {
+    auto const [null_count, group_start, group_end, null_start, null_end, start, end] =
+      this->groups.row_info(i);
 
     constexpr auto is_preceding = Direction == direction::PRECEDING;
-
-    if constexpr (WindowTag == window_tag::UNBOUNDED) {
-      if constexpr (is_preceding) {
-        return i - group_start + 1;
-      } else {
-        return group_end - i - 1;
-      }
-    }
 
     if (Grouping::has_nulls && i >= null_start && i < null_end) {
       // TODO: If the window is BOUNDED_OPEN, what does it mean for a row to fall in the null
@@ -516,87 +520,105 @@ struct distance_kernel {
       }
     }
 
-    if constexpr (WindowTag == window_tag::CURRENT_ROW) {
+    using Comp = comparator_t<OrderbyT, window_tag::CURRENT_ROW, Order>;
+    if constexpr (is_preceding) {
+      return 1 + thrust::distance(
+                   thrust::lower_bound(
+                     thrust::seq, this->begin + start, this->begin + i, this->begin[i], Comp{}),
+                   this->begin + i);
+    } else {
+      return thrust::distance(
+               this->begin + i,
+               thrust::upper_bound(
+                 thrust::seq, this->begin + i, this->begin + end, this->begin[i], Comp{})) -
+             1;
+    }
+  }
+
+  template <window_tag W = WindowTag,
+            CUDF_ENABLE_IF(W == window_tag::BOUNDED_OPEN || W == window_tag::BOUNDED_CLOSED)>
+  [[nodiscard]] __device__ size_type operator()(size_type i) const
+  {
+    using Comp = comparator_t<OrderbyT, WindowTag, Order>;
+    auto const [null_count, group_start, group_end, null_start, null_end, start, end] =
+      this->groups.row_info(i);
+
+    constexpr auto is_preceding = Direction == direction::PRECEDING;
+
+    if (Grouping::has_nulls && i >= null_start && i < null_end) {
+      // TODO: If the window is BOUNDED_OPEN, what does it mean for a row to fall in the null
+      // group? Not that important because only spark allows nulls in the orderby column, and it
+      // doesn't have BOUNDED_OPEN windows.
       if constexpr (is_preceding) {
-        return 1 + thrust::distance(
-                     thrust::lower_bound(thrust::seq, begin + start, begin + i, begin[i], Comp{}),
-                     begin + i);
+        return i - null_start + 1;
       } else {
-        return thrust::distance(
-                 begin + i,
-                 thrust::upper_bound(thrust::seq, begin + i, begin + end, begin[i], Comp{})) -
-               1;
+        return null_end - i - 1;
       }
     }
 
-    // At this point we are guaranteed that the window is either BOUNDED_OPEN
-    // or BOUNDED_CLOSED, but we need to tell the compiler that explicitly.
-    if constexpr (WindowTag == window_tag::BOUNDED_CLOSED ||
-                  WindowTag == window_tag::BOUNDED_OPEN) {
-      // TODO: Combine the below two comments to be accurate for both the
-      // preceding and following cases.
+    // TODO: Combine the below two comments to be accurate for both the
+    // preceding and following cases.
 
-      // The preceding endpoint is computed via row_value - delta.
-      // When delta is positive, this can only overflow towards -infinity.
-      // If we did overflow towards -infinity, then the value
-      // we're searching for is some min. But -infinity < min, so
-      // we must always use a `BOUNDED_CLOSED` window so that
-      // orderby = [min, ...] with positive delta picks up that
-      // row in the window.
-      // Conversely, when delta is negative, we can only overflow
-      // towards +infinity. If we did overflow towards +infinity
-      // then the value we're searching for is some max. But
-      // +infinity > max, so we must use a `BOUNDED_OPEN` window
-      // so that orderby = [..., max] with negative delta does not
-      // pick up that row in the window.
-      // When the orderby column is sorted in descending order the
-      // above applies mutatis mutandis with a sign flip.
+    // The preceding endpoint is computed via row_value - delta.
+    // When delta is positive, this can only overflow towards -infinity.
+    // If we did overflow towards -infinity, then the value
+    // we're searching for is some min. But -infinity < min, so
+    // we must always use a `BOUNDED_CLOSED` window so that
+    // orderby = [min, ...] with positive delta picks up that
+    // row in the window.
+    // Conversely, when delta is negative, we can only overflow
+    // towards +infinity. If we did overflow towards +infinity
+    // then the value we're searching for is some max. But
+    // +infinity > max, so we must use a `BOUNDED_OPEN` window
+    // so that orderby = [..., max] with negative delta does not
+    // pick up that row in the window.
+    // When the orderby column is sorted in descending order the
+    // above applies mutatis mutandis with a sign flip.
 
-      // The following endpoint is computed via row_value + delta.
-      // When delta is positive, this can only overflow towards +infinity.
-      // If we did overflow towards +infinity, then the value
-      // we're searching for is some max. But +infinity > max, so
-      // we must always use a `BOUNDED_CLOSED` window so that
-      // orderby = [..., max] with positive delta picks up that
-      // row in the window.
-      // Conversely, when delta is negative, we can only overflow
-      // towards -infinity. If we did overflow towards -infinity
-      // then the value we're searching for is some min. But
-      // -infinity < min, so we must use a `BOUNDED_OPEN` window
-      // so that orderby = [min, ...] with negative delta does not
-      // pick up that row in the window.
-      // When the orderby column is sorted in descending order the
-      // above applies mutatis mutandis with a sign flip.
-      auto const result = [&] {
-        if constexpr ((Order == order::ASCENDING) && (Direction == direction::PRECEDING) ||
-                      (Order == order::DESCENDING) && (Direction == direction::FOLLOWING)) {
-          return saturating_sub(begin[i], *row_delta);
-        } else {
-          return saturating_add(begin[i], *row_delta);
-        }
-      }();
-      auto const value        = cuda::std::get<0>(result);
-      auto const did_overflow = cuda::std::get<1>(result);
-
-      if (did_overflow) {
-        if (*row_delta > DeltaT{0}) {
-          return compute_bounded<Direction>(
-            begin,
-            i,
-            start,
-            end,
-            value,
-            comparator_t<OrderbyT, window_tag::BOUNDED_CLOSED, Order>{});
-        } else {
-          return compute_bounded<Direction>(
-            begin, i, start, end, value, comparator_t<OrderbyT, window_tag::BOUNDED_OPEN, Order>{});
-        }
+    // The following endpoint is computed via row_value + delta.
+    // When delta is positive, this can only overflow towards +infinity.
+    // If we did overflow towards +infinity, then the value
+    // we're searching for is some max. But +infinity > max, so
+    // we must always use a `BOUNDED_CLOSED` window so that
+    // orderby = [..., max] with positive delta picks up that
+    // row in the window.
+    // Conversely, when delta is negative, we can only overflow
+    // towards -infinity. If we did overflow towards -infinity
+    // then the value we're searching for is some min. But
+    // -infinity < min, so we must use a `BOUNDED_OPEN` window
+    // so that orderby = [min, ...] with negative delta does not
+    // pick up that row in the window.
+    // When the orderby column is sorted in descending order the
+    // above applies mutatis mutandis with a sign flip.
+    auto const result = [&] {
+      if constexpr ((Order == order::ASCENDING) && (Direction == direction::PRECEDING) ||
+                    (Order == order::DESCENDING) && (Direction == direction::FOLLOWING)) {
+        return saturating_sub(begin[i], *row_delta);
       } else {
-        return compute_bounded<Direction>(begin, i, start, end, value, Comp{});
+        return saturating_add(begin[i], *row_delta);
+      }
+    }();
+    auto const value        = cuda::std::get<0>(result);
+    auto const did_overflow = cuda::std::get<1>(result);
+
+    if (did_overflow) {
+      if (*row_delta > DeltaT{0}) {
+        return compute_bounded<Direction>(
+          begin, i, start, end, value, comparator_t<OrderbyT, window_tag::BOUNDED_CLOSED, Order>{});
+      } else {
+        return compute_bounded<Direction>(
+          begin, i, start, end, value, comparator_t<OrderbyT, window_tag::BOUNDED_OPEN, Order>{});
       }
     } else {
-      CUDF_UNREACHABLE("hello");
+      return compute_bounded<Direction>(begin, i, start, end, value, Comp{});
     }
+  }
+  template <window_tag W = WindowTag,
+            CUDF_ENABLE_IF(W != window_tag::UNBOUNDED && W == window_tag::CURRENT_ROW &&
+                           W != window_tag::BOUNDED_OPEN && W == window_tag::BOUNDED_CLOSED)>
+  [[nodiscard]] __device__ size_type operator()(size_type i) const
+  {
+    CUDF_UNREACHABLE("Invalid window type");
   }
 };
 
