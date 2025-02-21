@@ -563,7 +563,6 @@ struct range_window_clamper {
         }();
         auto const value        = cuda::std::get<0>(result);
         auto const did_overflow = cuda::std::get<1>(result);
-        auto const delta_positive{*row_delta > DeltaT{0}};
 
         auto compute_bounds =
           [](
@@ -581,7 +580,7 @@ struct range_window_clamper {
           };
 
         if (did_overflow) {
-          if (delta_positive) {
+          if (*row_delta > DeltaT{0}) {
             return compute_bounds(begin,
                                   i,
                                   start,
