@@ -565,67 +565,39 @@ struct range_window_clamper {
         auto const did_overflow = cuda::std::get<1>(result);
         auto const delta_positive{*row_delta > DeltaT{0}};
 
-        if constexpr (Direction == direction::PRECEDING) {
-          auto compute_bounds = [](auto& begin,
-                                   size_type i,
-                                   size_type start,
-                                   size_type end,
-                                   OrderbyT value,
-                                   auto&& comp) {
-            return 1 + thrust::distance(
-                         thrust::lower_bound(thrust::seq, begin + start, begin + end, value, comp),
-                         begin + i);
-          };
-          if (did_overflow) {
-            if (delta_positive) {
-              return compute_bounds(begin,
-                                    i,
-                                    start,
-                                    end,
-                                    value,
-                                    comparator_t<OrderbyT, window_tag::BOUNDED_CLOSED, Order>{});
+        auto compute_bounds =
+          [](
+            auto& begin, size_type i, size_type start, size_type end, OrderbyT value, auto&& comp) {
+            if constexpr (Direction == direction::PRECEDING) {
+              return 1 + thrust::distance(thrust::lower_bound(
+                                            thrust::seq, begin + start, begin + end, value, comp),
+                                          begin + i);
             } else {
-              return compute_bounds(begin,
-                                    i,
-                                    start,
-                                    end,
-                                    value,
-                                    comparator_t<OrderbyT, window_tag::BOUNDED_OPEN, Order>{});
+              return thrust::distance(
+                       begin + i,
+                       thrust::upper_bound(thrust::seq, begin + start, begin + end, value, comp)) -
+                     1;
             }
+          };
+
+        if (did_overflow) {
+          if (delta_positive) {
+            return compute_bounds(begin,
+                                  i,
+                                  start,
+                                  end,
+                                  value,
+                                  comparator_t<OrderbyT, window_tag::BOUNDED_CLOSED, Order>{});
           } else {
-            return compute_bounds(begin, i, start, end, value, Comp{});
+            return compute_bounds(begin,
+                                  i,
+                                  start,
+                                  end,
+                                  value,
+                                  comparator_t<OrderbyT, window_tag::BOUNDED_OPEN, Order>{});
           }
         } else {
-          auto compute_bounds = [](auto& begin,
-                                   size_type i,
-                                   size_type start,
-                                   size_type end,
-                                   OrderbyT value,
-                                   auto&& comp) {
-            return thrust::distance(
-                     begin + i,
-                     thrust::upper_bound(thrust::seq, begin + start, begin + end, value, comp)) -
-                   1;
-          };
-          if (did_overflow) {
-            if (delta_positive) {
-              return compute_bounds(begin,
-                                    i,
-                                    start,
-                                    end,
-                                    value,
-                                    comparator_t<OrderbyT, window_tag::BOUNDED_CLOSED, Order>{});
-            } else {
-              return compute_bounds(begin,
-                                    i,
-                                    start,
-                                    end,
-                                    value,
-                                    comparator_t<OrderbyT, window_tag::BOUNDED_OPEN, Order>{});
-            }
-          } else {
-            return compute_bounds(begin, i, start, end, value, Comp{});
-          }
+          return compute_bounds(begin, i, start, end, value, Comp{});
         }
       } else {
         CUDF_UNREACHABLE("hello");
