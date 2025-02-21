@@ -413,6 +413,25 @@ template <typename T, typename V>
   }
 }
 
+template <direction Direction, typename OrderbyT, typename Comparator>
+__device__ inline auto compute_bounded(column_device_view::const_iterator<OrderbyT> const& begin,
+                                       size_type i,
+                                       size_type start,
+                                       size_type end,
+                                       OrderbyT value,
+                                       Comparator&& comp)
+{
+  if constexpr (Direction == direction::PRECEDING) {
+    return 1 +
+           thrust::distance(
+             thrust::lower_bound(thrust::seq, begin + start, begin + end, value, comp), begin + i);
+  } else {
+    return thrust::distance(
+             begin + i, thrust::upper_bound(thrust::seq, begin + start, begin + end, value, comp)) -
+           1;
+  }
+};
+
 /**
  * @brief Functor to dispatch computation of clamped range-based rolling window bounds.
  *
@@ -564,39 +583,26 @@ struct range_window_clamper {
         auto const value        = cuda::std::get<0>(result);
         auto const did_overflow = cuda::std::get<1>(result);
 
-        auto compute_bounds =
-          [](
-            auto& begin, size_type i, size_type start, size_type end, OrderbyT value, auto&& comp) {
-            if constexpr (Direction == direction::PRECEDING) {
-              return 1 + thrust::distance(thrust::lower_bound(
-                                            thrust::seq, begin + start, begin + end, value, comp),
-                                          begin + i);
-            } else {
-              return thrust::distance(
-                       begin + i,
-                       thrust::upper_bound(thrust::seq, begin + start, begin + end, value, comp)) -
-                     1;
-            }
-          };
-
         if (did_overflow) {
           if (*row_delta > DeltaT{0}) {
-            return compute_bounds(begin,
-                                  i,
-                                  start,
-                                  end,
-                                  value,
-                                  comparator_t<OrderbyT, window_tag::BOUNDED_CLOSED, Order>{});
+            return compute_bounded<Direction>(
+              begin,
+              i,
+              start,
+              end,
+              value,
+              comparator_t<OrderbyT, window_tag::BOUNDED_CLOSED, Order>{});
           } else {
-            return compute_bounds(begin,
-                                  i,
-                                  start,
-                                  end,
-                                  value,
-                                  comparator_t<OrderbyT, window_tag::BOUNDED_OPEN, Order>{});
+            return compute_bounded<Direction>(
+              begin,
+              i,
+              start,
+              end,
+              value,
+              comparator_t<OrderbyT, window_tag::BOUNDED_OPEN, Order>{});
           }
         } else {
-          return compute_bounds(begin, i, start, end, value, Comp{});
+          return compute_bounded<Direction>(begin, i, start, end, value, Comp{});
         }
       } else {
         CUDF_UNREACHABLE("hello");
