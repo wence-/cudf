@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2021-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -100,14 +100,14 @@ void rolling_output_type_matches(cudf::column_view const& result,
 }
 
 void rolling_output_type_matches(cudf::column_view const& empty_input,
-                                 agg_vector_t const& aggs,
+                                 agg_vector_t& aggs,
                                  cudf::type_id expected_type,
                                  cudf::type_id expected_child_type = cudf::type_id::EMPTY)
 {
   auto const preceding_col = preceding_column();
   auto const following_col = following_column();
 
-  for (auto const& agg : aggs) {
+  for (auto&& agg : aggs) {
     auto rolling_output_numeric_bounds =
       cudf::rolling_window(empty_input, preceding, following, min_periods, *agg);
     rolling_output_type_matches(
@@ -127,17 +127,20 @@ void rolling_output_type_matches(cudf::column_view const& empty_input,
                                    *agg);
     rolling_output_type_matches(grouped_rolling_output->view(), expected_type, expected_child_type);
 
+    auto prec_scalar   = preceding_scalar();
+    auto follow_scalar = following_scalar();
+    std::vector<cudf::rolling_request> requests{{empty_input, std::move(agg)}};
     auto grouped_range_rolling_output =
       cudf::grouped_range_rolling_window(cudf::table_view{std::vector{empty_input}},
                                          empty_input,
                                          cudf::order::ASCENDING,
-                                         empty_input,
-                                         cudf::range_window_bounds::get(preceding_scalar()),
-                                         cudf::range_window_bounds::get(following_scalar()),
+                                         cudf::null_order::AFTER,
+                                         cudf::bounded_closed{prec_scalar},
+                                         cudf::bounded_closed{follow_scalar},
                                          min_periods,
-                                         *agg);
+                                         requests);
     rolling_output_type_matches(
-      grouped_range_rolling_output->view(), expected_type, expected_child_type);
+      grouped_range_rolling_output->view().column(0), expected_type, expected_child_type);
   }
 }
 

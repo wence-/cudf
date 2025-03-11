@@ -110,6 +110,11 @@ struct current_row {
  */
 using range_window_type = std::variant<unbounded, current_row, bounded_closed, bounded_open>;
 
+struct rolling_request {
+  column_view values;
+  std::unique_ptr<rolling_aggregation> agg;
+};
+
 /**
  * @brief Constructs preceding and following columns given window range specifications.
  *
@@ -430,6 +435,8 @@ std::unique_ptr<column> grouped_rolling_window(
  * @brief  Applies a grouping-aware, value range-based rolling window function to the values in a
  *         column.
  *
+ * @deprecated Since 25.04, to be removed in 25.06
+ *
  * This function aggregates rows in a window around each element of a specified `input` column.
  * The window is determined based on the values of an ordered `orderby` column, and on the values
  * of a `preceding` and `following` scalar representing an inclusive range of orderby column values.
@@ -536,7 +543,8 @@ std::unique_ptr<column> grouped_rolling_window(
  *
  * @returns   A nullable output column containing the rolling window results
  */
-std::unique_ptr<column> grouped_range_rolling_window(
+[[deprecated("Use table-based cudf::grouped_range_rolling_window instead")]] std::unique_ptr<column>
+grouped_range_rolling_window(
   table_view const& group_keys,
   column_view const& orderby_column,
   cudf::order const& order,
@@ -572,7 +580,7 @@ std::unique_ptr<table> grouped_range_rolling_window(
   range_window_type preceding,
   range_window_type following,
   size_type min_periods,
-  std::vector<std::pair<column_view const&, rolling_aggregation const&>> requests,
+  host_span<rolling_request const> requests,
   rmm::cuda_stream_view stream      = cudf::get_default_stream(),
   rmm::device_async_resource_ref mr = cudf::get_current_device_resource_ref());
 /**

@@ -173,16 +173,17 @@ TEST_F(GroupedTimeRollingTest, FixedSize)
   auto const following =
     cudf::duration_scalar<cudf::duration_D>(1L, true, cudf::test::get_default_stream());
   auto const min_periods = 1L;
-  cudf::grouped_range_rolling_window(
-    grouping_keys,
-    time_col,
-    cudf::order::ASCENDING,
-    agg_col,
-    cudf::range_window_bounds::get(preceding, cudf::test::get_default_stream()),
-    cudf::range_window_bounds::get(following, cudf::test::get_default_stream()),
-    min_periods,
-    *cudf::make_count_aggregation<cudf::rolling_aggregation>(),
-    cudf::test::get_default_stream());
+  auto agg               = cudf::make_count_aggregation<cudf::rolling_aggregation>();
+  std::vector<cudf::rolling_request> requests{{agg_col, std::move(agg)}};
+  cudf::grouped_range_rolling_window(grouping_keys,
+                                     time_col,
+                                     cudf::order::ASCENDING,
+                                     cudf::null_order::BEFORE,
+                                     cudf::bounded_closed{preceding},
+                                     cudf::bounded_closed{following},
+                                     min_periods,
+                                     requests,
+                                     cudf::test::get_default_stream());
 }
 
 TEST_F(GroupedTimeRollingTest, WindowBounds)
@@ -195,23 +196,22 @@ TEST_F(GroupedTimeRollingTest, WindowBounds)
     cudf::test::fixed_width_column_wrapper<cudf::timestamp_D, cudf::timestamp_D::rep>{
       {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, {0, 0, 0, 0, 1, 1, 1, 1, 1, 1}};
 
-  auto const grouping_keys       = cudf::table_view{std::vector<cudf::column_view>{grp_col}};
-  auto const unbounded_preceding = cudf::range_window_bounds::unbounded(
-    cudf::data_type(cudf::type_to_id<cudf::duration_D>()), cudf::test::get_default_stream());
+  auto const grouping_keys = cudf::table_view{std::vector<cudf::column_view>{grp_col}};
   auto const following =
     cudf::duration_scalar<cudf::duration_D>(1L, true, cudf::test::get_default_stream());
 
+  auto agg = cudf::make_count_aggregation<cudf::rolling_aggregation>();
+  std::vector<cudf::rolling_request> requests{{agg_col, std::move(agg)}};
   auto const min_periods = 1L;
-  cudf::grouped_range_rolling_window(
-    grouping_keys,
-    time_col,
-    cudf::order::ASCENDING,
-    agg_col,
-    unbounded_preceding,
-    cudf::range_window_bounds::get(following, cudf::test::get_default_stream()),
-    min_periods,
-    *cudf::make_count_aggregation<cudf::rolling_aggregation>(),
-    cudf::test::get_default_stream());
+  cudf::grouped_range_rolling_window(grouping_keys,
+                                     time_col,
+                                     cudf::order::ASCENDING,
+                                     cudf::null_order::BEFORE,
+                                     cudf::unbounded{},
+                                     cudf::bounded_closed{following},
+                                     min_periods,
+                                     requests,
+                                     cudf::test::get_default_stream());
 }
 
 class GroupedRangeRollingTest : public cudf::test::BaseFixture {};
@@ -225,25 +225,20 @@ TEST_F(GroupedRangeRollingTest, RangeWindowBounds)
   auto const order_by = cudf::test::fixed_width_column_wrapper<int>{{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
                                                                     {0, 0, 0, 0, 1, 1, 1, 1, 1, 1}};
 
-  cudf::range_window_bounds preceding = cudf::range_window_bounds::get(
-    cudf::numeric_scalar<int>{int{1}, true, cudf::test::get_default_stream()},
-    cudf::test::get_default_stream());
-
-  cudf::range_window_bounds following = cudf::range_window_bounds::get(
-    cudf::numeric_scalar<int>{int{1}, true, cudf::test::get_default_stream()},
-    cudf::test::get_default_stream());
-
+  auto preceding = cudf::numeric_scalar<int>{int{1}, true, cudf::test::get_default_stream()};
+  auto following = cudf::numeric_scalar<int>{int{1}, true, cudf::test::get_default_stream()};
   auto const min_periods = cudf::size_type{1};
 
   auto const grouping_keys = cudf::table_view{std::vector<cudf::column_view>{grp_col}};
-
+  auto agg                 = cudf::make_count_aggregation<cudf::rolling_aggregation>();
+  std::vector<cudf::rolling_request> requests{{agg_col, std::move(agg)}};
   cudf::grouped_range_rolling_window(grouping_keys,
                                      order_by,
                                      cudf::order::ASCENDING,
-                                     agg_col,
-                                     preceding,
-                                     following,
+                                     cudf::null_order::BEFORE,
+                                     cudf::bounded_closed{preceding},
+                                     cudf::bounded_closed{following},
                                      min_periods,
-                                     *cudf::make_count_aggregation<cudf::rolling_aggregation>(),
+                                     requests,
                                      cudf::test::get_default_stream());
 }

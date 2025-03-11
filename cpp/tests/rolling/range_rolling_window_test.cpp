@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2021-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -49,6 +49,7 @@ struct window_exec {
   window_exec(cudf::column_view gby,
               cudf::column_view oby,
               cudf::order ordering,
+              cudf::null_order null_order,
               cudf::column_view agg,
               ScalarT preceding_scalar,
               ScalarT following_scalar,
@@ -56,6 +57,7 @@ struct window_exec {
     : gby_column(std::move(gby)),
       oby_column(std::move(oby)),
       order(ordering),
+      null_order(null_order),
       agg_column(std::move(agg)),
       preceding(std::move(preceding_scalar)),
       following(std::move(following_scalar)),
@@ -65,25 +67,27 @@ struct window_exec {
 
   cudf::size_type num_rows() { return gby_column.size(); }
 
-  std::unique_ptr<cudf::column> operator()(
-    std::unique_ptr<cudf::rolling_aggregation> const& agg) const
+  std::unique_ptr<cudf::column> operator()(std::unique_ptr<cudf::rolling_aggregation>& agg) const
   {
-    auto const grouping_keys = cudf::table_view{std::vector<cudf::column_view>{gby_column}};
-
-    return cudf::grouped_range_rolling_window(grouping_keys,
-                                              oby_column,
-                                              order,
-                                              agg_column,
-                                              cudf::range_window_bounds::get(preceding),
-                                              cudf::range_window_bounds::get(following),
-                                              min_periods,
-                                              *agg);
+    auto const grouping_keys = cudf::table_view{{gby_column}};
+    std::vector<cudf::rolling_request> requests{{agg_column, std::move(agg)}};
+    auto results = cudf::grouped_range_rolling_window(grouping_keys,
+                                                      oby_column,
+                                                      order,
+                                                      null_order,
+                                                      cudf::range_window_type(preceding),
+                                                      cudf::range_window_type(following),
+                                                      min_periods,
+                                                      requests);
+    EXPECT_EQ(results->num_columns(), 1);
+    return std::move(results->release().at(0));
   }
 
  private:
   cudf::column_view gby_column;  // Groupby column.
   cudf::column_view oby_column;  // Orderby column.
   cudf::order order;             // Ordering for `oby_column`.
+  cudf::null_order null_order;   // Null sort order for oby_column.
   cudf::column_view agg_column;  // Aggregation column.
   ScalarT preceding;             // Preceding window scalar.
   ScalarT following;             // Following window scalar.
@@ -174,6 +178,7 @@ TYPED_TEST(TypedTimeRangeRollingTest, TimestampASC)
     window_exec(gby_column,
                 time_column,
                 cudf::order::ASCENDING,
+                cudf::null_order::AFTER,
                 agg_column,
                 cudf::duration_scalar<DurationT>{DurationT{2}, true},   // 2 "durations" preceding.
                 cudf::duration_scalar<DurationT>{DurationT{1}, true});  // 1 "durations" following.
@@ -256,6 +261,7 @@ TYPED_TEST(TypedTimeRangeRollingTest, TimestampDESC)
     window_exec(gby_column,
                 time_column,
                 cudf::order::DESCENDING,
+                cudf::null_order::AFTER,
                 agg_column,
                 cudf::duration_scalar<DurationT>{DurationT{1}, true},   // 1 "durations" preceding.
                 cudf::duration_scalar<DurationT>{DurationT{2}, true});  // 2 "durations" following.
@@ -284,6 +290,7 @@ TYPED_TEST(TypedIntegralRangeRollingTest, OrderByASC)
   auto exec = window_exec(gby_column,
                           oby_column,
                           cudf::order::ASCENDING,
+                          cudf::null_order::AFTER,
                           agg_column,
                           cudf::numeric_scalar<T>(2),   // 2 preceding.
                           cudf::numeric_scalar<T>(1));  // 1 following.
@@ -307,6 +314,7 @@ TYPED_TEST(TypedIntegralRangeRollingTest, OrderByDesc)
   auto exec = window_exec(gby_column,
                           oby_column,
                           cudf::order::DESCENDING,
+                          cudf::null_order::AFTER,
                           agg_column,
                           cudf::numeric_scalar<T>(1),   // 1 preceding.
                           cudf::numeric_scalar<T>(2));  // 2 following.
@@ -321,28 +329,23 @@ using TypesUnderTest = cudf::test::IntegralTypesNotBool;
 
 TYPED_TEST_SUITE(TypedRangeRollingNullsTest, TypesUnderTest);
 
-template <typename T>
-auto do_count_over_window(cudf::column_view grouping_col,
-                          cudf::column_view order_by,
-                          cudf::order order,
-                          cudf::column_view aggregation_col,
-                          cudf::range_window_bounds&& preceding =
-                            cudf::range_window_bounds::get(cudf::numeric_scalar<T>{T{1}, true}),
-                          cudf::range_window_bounds&& following =
-                            cudf::range_window_bounds::get(cudf::numeric_scalar<T>{T{1}, true}))
+std::unique_ptr<cudf::column> do_count_over_window(cudf::column_view grouping_col,
+                                                   cudf::column_view order_by,
+                                                   cudf::order order,
+                                                   cudf::null_order null_order,
+                                                   cudf::column_view aggregation_col,
+                                                   cudf::range_window_type preceding,
+                                                   cudf::range_window_type following)
 {
   auto const min_periods   = cudf::size_type{1};
-  auto const grouping_keys = cudf::table_view{std::vector<cudf::column_view>{grouping_col}};
+  auto const grouping_keys = cudf::table_view{{grouping_col}};
+  auto agg                 = cudf::make_count_aggregation<cudf::rolling_aggregation>();
+  std::vector<cudf::rolling_request> requests{{aggregation_col, std::move(agg)}};
 
-  return cudf::grouped_range_rolling_window(
-    grouping_keys,
-    order_by,
-    order,
-    aggregation_col,
-    std::move(preceding),
-    std::move(following),
-    min_periods,
-    *cudf::make_count_aggregation<cudf::rolling_aggregation>());
+  auto results = cudf::grouped_range_rolling_window(
+    grouping_keys, order_by, order, null_order, preceding, following, min_periods, requests);
+  EXPECT_EQ(results->num_columns(), 1);
+  return std::move(results->release().at(0));
 }
 
 TYPED_TEST(TypedRangeRollingNullsTest, CountSingleGroupOrderByASCNullsFirst)
@@ -358,7 +361,15 @@ TYPED_TEST(TypedRangeRollingNullsTest, CountSingleGroupOrderByASCNullsFirst)
   auto const oby_col = cudf::test::fixed_width_column_wrapper<T>{{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
                                                                  {0, 0, 0, 0, 1, 1, 1, 1, 1, 1}};
 
-  auto const output = do_count_over_window<T>(grp_col, oby_col, cudf::order::ASCENDING, agg_col);
+  auto prec         = cudf::numeric_scalar{T{1}, true};
+  auto follow       = cudf::numeric_scalar{T{1}, true};
+  auto const output = do_count_over_window(grp_col,
+                                           oby_col,
+                                           cudf::order::ASCENDING,
+                                           cudf::null_order::BEFORE,
+                                           agg_col,
+                                           cudf::bounded_closed{prec},
+                                           cudf::bounded_closed{follow});
 
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(output->view(),
                                  cudf::test::fixed_width_column_wrapper<cudf::size_type>{
@@ -379,7 +390,15 @@ TYPED_TEST(TypedRangeRollingNullsTest, CountSingleGroupOrderByASCNullsLast)
   auto const oby_col = cudf::test::fixed_width_column_wrapper<T>{{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
                                                                  {1, 1, 1, 1, 1, 1, 0, 0, 0, 0}};
 
-  auto const output = do_count_over_window<T>(grp_col, oby_col, cudf::order::ASCENDING, agg_col);
+  auto prec         = cudf::numeric_scalar{T{1}, true};
+  auto follow       = cudf::numeric_scalar{T{1}, true};
+  auto const output = do_count_over_window(grp_col,
+                                           oby_col,
+                                           cudf::order::ASCENDING,
+                                           cudf::null_order::AFTER,
+                                           agg_col,
+                                           cudf::bounded_closed{prec},
+                                           cudf::bounded_closed{follow});
 
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(output->view(),
                                  cudf::test::fixed_width_column_wrapper<cudf::size_type>{
@@ -398,7 +417,15 @@ TYPED_TEST(TypedRangeRollingNullsTest, CountMultiGroupOrderByASCNullsFirst)
   auto const oby_col = cudf::test::fixed_width_column_wrapper<T>{{1, 2, 2, 1, 2, 1, 2, 3, 4, 5},
                                                                  {0, 0, 0, 1, 1, 0, 0, 1, 1, 1}};
 
-  auto const output = do_count_over_window<T>(grp_col, oby_col, cudf::order::ASCENDING, agg_col);
+  auto prec         = cudf::numeric_scalar{T{1}, true};
+  auto follow       = cudf::numeric_scalar{T{1}, true};
+  auto const output = do_count_over_window(grp_col,
+                                           oby_col,
+                                           cudf::order::ASCENDING,
+                                           cudf::null_order::BEFORE,
+                                           agg_col,
+                                           cudf::bounded_closed{prec},
+                                           cudf::bounded_closed{follow});
 
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(output->view(),
                                  cudf::test::fixed_width_column_wrapper<cudf::size_type>{
@@ -418,7 +445,15 @@ TYPED_TEST(TypedRangeRollingNullsTest, CountMultiGroupOrderByASCNullsLast)
     {1, 2, 2, 1, 3, 1, 2, 3, 4, 5},
     {true, true, true, false, false, true, true, true, false, false}};
 
-  auto const output = do_count_over_window<T>(grp_col, oby_col, cudf::order::ASCENDING, agg_col);
+  auto prec         = cudf::numeric_scalar{T{1}, true};
+  auto follow       = cudf::numeric_scalar{T{1}, true};
+  auto const output = do_count_over_window(grp_col,
+                                           oby_col,
+                                           cudf::order::ASCENDING,
+                                           cudf::null_order::AFTER,
+                                           agg_col,
+                                           cudf::bounded_closed{prec},
+                                           cudf::bounded_closed{follow});
 
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(output->view(),
                                  cudf::test::fixed_width_column_wrapper<cudf::size_type>{
@@ -438,8 +473,15 @@ TYPED_TEST(TypedRangeRollingNullsTest, CountSingleGroupOrderByDESCNullsFirst)
   auto const oby_col = cudf::test::fixed_width_column_wrapper<T>{{9, 8, 7, 6, 5, 4, 3, 2, 1, 0},
                                                                  {0, 0, 0, 0, 1, 1, 1, 1, 1, 1}};
 
-  auto const output = do_count_over_window<T>(grp_col, oby_col, cudf::order::DESCENDING, agg_col);
-  ;
+  auto prec         = cudf::numeric_scalar{T{1}, true};
+  auto follow       = cudf::numeric_scalar{T{1}, true};
+  auto const output = do_count_over_window(grp_col,
+                                           oby_col,
+                                           cudf::order::DESCENDING,
+                                           cudf::null_order::AFTER,
+                                           agg_col,
+                                           cudf::bounded_closed{prec},
+                                           cudf::bounded_closed{follow});
 
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(output->view(),
                                  cudf::test::fixed_width_column_wrapper<cudf::size_type>{
@@ -460,7 +502,15 @@ TYPED_TEST(TypedRangeRollingNullsTest, CountSingleGroupOrderByDESCNullsLast)
   auto const oby_col = cudf::test::fixed_width_column_wrapper<T>{{9, 8, 7, 6, 5, 4, 3, 2, 1, 0},
                                                                  {1, 1, 1, 1, 1, 1, 0, 0, 0, 0}};
 
-  auto const output = do_count_over_window<T>(grp_col, oby_col, cudf::order::DESCENDING, agg_col);
+  auto prec         = cudf::numeric_scalar{T{1}, true};
+  auto follow       = cudf::numeric_scalar{T{1}, true};
+  auto const output = do_count_over_window(grp_col,
+                                           oby_col,
+                                           cudf::order::DESCENDING,
+                                           cudf::null_order::BEFORE,
+                                           agg_col,
+                                           cudf::bounded_closed{prec},
+                                           cudf::bounded_closed{follow});
 
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(output->view(),
                                  cudf::test::fixed_width_column_wrapper<cudf::size_type>{
@@ -479,7 +529,15 @@ TYPED_TEST(TypedRangeRollingNullsTest, CountMultiGroupOrderByDESCNullsFirst)
   auto const oby_col = cudf::test::fixed_width_column_wrapper<T>{{4, 3, 2, 1, 0, 9, 8, 7, 6, 5},
                                                                  {0, 0, 0, 1, 1, 0, 0, 1, 1, 1}};
 
-  auto const output = do_count_over_window<T>(grp_col, oby_col, cudf::order::DESCENDING, agg_col);
+  auto prec         = cudf::numeric_scalar{T{1}, true};
+  auto follow       = cudf::numeric_scalar{T{1}, true};
+  auto const output = do_count_over_window(grp_col,
+                                           oby_col,
+                                           cudf::order::DESCENDING,
+                                           cudf::null_order::AFTER,
+                                           agg_col,
+                                           cudf::bounded_closed{prec},
+                                           cudf::bounded_closed{follow});
 
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(output->view(),
                                  cudf::test::fixed_width_column_wrapper<cudf::size_type>{
@@ -498,7 +556,15 @@ TYPED_TEST(TypedRangeRollingNullsTest, CountMultiGroupOrderByDESCNullsLast)
   auto const oby_col = cudf::test::fixed_width_column_wrapper<T>{{4, 3, 2, 1, 0, 9, 8, 7, 6, 5},
                                                                  {1, 1, 1, 0, 0, 1, 1, 1, 0, 0}};
 
-  auto const output = do_count_over_window<T>(grp_col, oby_col, cudf::order::DESCENDING, agg_col);
+  auto prec         = cudf::numeric_scalar{T{1}, true};
+  auto follow       = cudf::numeric_scalar{T{1}, true};
+  auto const output = do_count_over_window(grp_col,
+                                           oby_col,
+                                           cudf::order::DESCENDING,
+                                           cudf::null_order::BEFORE,
+                                           agg_col,
+                                           cudf::bounded_closed{prec},
+                                           cudf::bounded_closed{follow});
 
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(output->view(),
                                  cudf::test::fixed_width_column_wrapper<cudf::size_type>{
@@ -519,7 +585,15 @@ TYPED_TEST(TypedRangeRollingNullsTest, CountSingleGroupAllNullOrderBys)
   auto const oby_col = cudf::test::fixed_width_column_wrapper<T>{{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
                                                                  {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}};
 
-  auto const output = do_count_over_window<T>(grp_col, oby_col, cudf::order::ASCENDING, agg_col);
+  auto prec         = cudf::numeric_scalar{T{1}, true};
+  auto follow       = cudf::numeric_scalar{T{1}, true};
+  auto const output = do_count_over_window(grp_col,
+                                           oby_col,
+                                           cudf::order::ASCENDING,
+                                           cudf::null_order::AFTER,
+                                           agg_col,
+                                           cudf::bounded_closed{prec},
+                                           cudf::bounded_closed{follow});
 
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(output->view(),
                                  cudf::test::fixed_width_column_wrapper<cudf::size_type>{
@@ -540,7 +614,15 @@ TYPED_TEST(TypedRangeRollingNullsTest, CountMultiGroupAllNullOrderBys)
   auto const oby_col = cudf::test::fixed_width_column_wrapper<T>{{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
                                                                  {1, 1, 1, 1, 1, 0, 0, 0, 0, 0}};
 
-  auto const output = do_count_over_window<T>(grp_col, oby_col, cudf::order::ASCENDING, agg_col);
+  auto prec         = cudf::numeric_scalar{T{1}, true};
+  auto follow       = cudf::numeric_scalar{T{1}, true};
+  auto const output = do_count_over_window(grp_col,
+                                           oby_col,
+                                           cudf::order::ASCENDING,
+                                           cudf::null_order::AFTER,
+                                           agg_col,
+                                           cudf::bounded_closed{prec},
+                                           cudf::bounded_closed{follow});
 
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(output->view(),
                                  cudf::test::fixed_width_column_wrapper<cudf::size_type>{
@@ -557,13 +639,14 @@ TYPED_TEST(TypedRangeRollingNullsTest, UnboundedPrecedingWindowSingleGroupOrderB
   auto const oby_col = cudf::test::fixed_width_column_wrapper<T>{{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
                                                                  {0, 0, 0, 0, 1, 1, 1, 1, 1, 1}};
 
-  auto const output = do_count_over_window<T>(
-    grp_col,
-    oby_col,
-    cudf::order::ASCENDING,
-    agg_col,
-    cudf::range_window_bounds::unbounded(cudf::data_type{cudf::type_to_id<T>()}),
-    cudf::range_window_bounds::get(cudf::numeric_scalar<T>{1, true}));
+  auto follow       = cudf::numeric_scalar{T{1}, true};
+  auto const output = do_count_over_window(grp_col,
+                                           oby_col,
+                                           cudf::order::ASCENDING,
+                                           cudf::null_order::BEFORE,
+                                           agg_col,
+                                           cudf::unbounded{},
+                                           cudf::bounded_closed{follow});
 
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(output->view(),
                                  cudf::test::fixed_width_column_wrapper<cudf::size_type>{
@@ -580,13 +663,14 @@ TYPED_TEST(TypedRangeRollingNullsTest, UnboundedFollowingWindowSingleGroupOrderB
   auto const oby_col = cudf::test::fixed_width_column_wrapper<T>{{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
                                                                  {0, 0, 0, 0, 1, 1, 1, 1, 1, 1}};
 
-  auto const output = do_count_over_window<T>(
-    grp_col,
-    oby_col,
-    cudf::order::ASCENDING,
-    agg_col,
-    cudf::range_window_bounds::get(cudf::numeric_scalar<T>{1, true}),
-    cudf::range_window_bounds::unbounded(cudf::data_type{cudf::type_to_id<T>()}));
+  auto prec         = cudf::numeric_scalar{T{1}, true};
+  auto const output = do_count_over_window(grp_col,
+                                           oby_col,
+                                           cudf::order::ASCENDING,
+                                           cudf::null_order::BEFORE,
+                                           agg_col,
+                                           cudf::bounded_closed{prec},
+                                           cudf::unbounded{});
 
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(output->view(),
                                  cudf::test::fixed_width_column_wrapper<cudf::size_type>{

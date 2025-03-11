@@ -87,19 +87,19 @@ void bench_range_rolling_sum(nvbench::state& state)
   }();
 
   auto req = cudf::make_sum_aggregation<cudf::rolling_aggregation>();
-
+  std::vector<cudf::rolling_request> requests{{vals->view(), std::move(req)}};
   auto const mem_stats_logger = cudf::memory_stats_logger();
   state.set_cuda_stream(nvbench::make_cuda_stream_view(cudf::get_default_stream().value()));
+
   state.exec(nvbench::exec_tag::sync, [&](nvbench::launch& launch) {
-    auto const result =
-      cudf::grouped_range_rolling_window(cudf::table_view{},
-                                         orderby->view(),
-                                         cudf::order::ASCENDING,
-                                         vals->view(),
-                                         cudf::range_window_bounds::get(preceding_range),
-                                         cudf::range_window_bounds::get(following_range),
-                                         1,
-                                         *req);
+    auto const result = cudf::grouped_range_rolling_window(cudf::table_view{},
+                                                           orderby->view(),
+                                                           cudf::order::ASCENDING,
+                                                           cudf::null_order::AFTER,
+                                                           cudf::bounded_closed{preceding_range},
+                                                           cudf::bounded_closed{following_range},
+                                                           1,
+                                                           requests);
   });
   auto const elapsed_time = state.get_summary("nv/cold/time/gpu/mean").get_float64("value");
   state.add_element_count(static_cast<double>(num_rows) / elapsed_time / 1'000'000., "Mrows/s");

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2021-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,6 +30,8 @@ namespace CUDF_EXPORT cudf {
  * @brief Abstraction for window boundary sizes, to be used with
  *        `grouped_range_rolling_window()`.
  *
+ * @deprecated Since 25.04, to be removed in 25.06. Use `range_window_type` instead.
+ *
  * Similar to `window_bounds` in `grouped_rolling_window()`, `range_window_bounds`
  * represents window boundaries for use with `grouped_range_rolling_window()`.
  * A window may be specified as one of the following:
@@ -41,7 +43,7 @@ namespace CUDF_EXPORT cudf {
  *   3. "current row", indicating that the bounds end at the first/last
  *      row in the group that match the value of the current row.
  */
-struct range_window_bounds {
+struct [[deprecated("Use cudf::range_window_type instead")]] range_window_bounds {
  public:
   /**
    * @brief The type of range_window_bounds.
