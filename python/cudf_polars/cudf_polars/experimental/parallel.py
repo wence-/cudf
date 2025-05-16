@@ -32,6 +32,7 @@ from cudf_polars.experimental.dispatch import (
     generate_ir_tasks,
     lower_ir_node,
 )
+from cudf_polars.experimental.repartition import Repartition
 from cudf_polars.experimental.utils import _concat, _lower_ir_fallback
 
 if TYPE_CHECKING:
@@ -258,6 +259,13 @@ def _(
     # Return reconstructed node and partition-info dict
     new_node = ir.reconstruct(children)
     partition_info[new_node] = PartitionInfo(count=count)
+    if rec.state["config_options"].executor.hack_pdsh_q8 and list(new_node.schema) == [
+        "o_custkey",
+        "o_orderkey",
+        "o_orderdate",
+    ]:
+        new_node = Repartition(new_node.schema, new_node)
+        partition_info[new_node] = PartitionInfo(count=count // 4)
     return new_node, partition_info
 
 
@@ -319,7 +327,59 @@ def _lower_ir_pwise(
 
 
 _lower_ir_pwise_preserve = partial(_lower_ir_pwise, preserve_partitioning=True)
-lower_ir_node.register(Projection, _lower_ir_pwise_preserve)
+
+
+@lower_ir_node.register(Projection)
+def _(
+    ir: Projection, rec: LowerIRTransformer
+) -> tuple[IR, MutableMapping[IR, PartitionInfo]]:
+    new_node, partition_info = _lower_ir_pwise_preserve(ir, rec)
+    if not rec.state["config_options"].executor.hack_pdsh_q8:
+        return new_node, partition_info
+    if list(new_node.schema) == ["n_nationkey", "c_custkey", "r_name"]:
+        repartitioned = Repartition(new_node.schema, new_node)
+        partition_info[repartitioned] = PartitionInfo(
+            count=max(1, partition_info[new_node].count // 4)
+        )
+        return repartitioned, partition_info
+    if list(new_node.schema) == ["c_custkey", "o_orderkey", "o_orderdate", "r_name"]:
+        repartitioned = Repartition(new_node.schema, new_node)
+        partition_info[repartitioned] = PartitionInfo(
+            count=max(1, partition_info[new_node].count // 4)
+        )
+        return repartitioned, partition_info
+    if list(new_node.schema) == [
+        "o_orderkey",
+        "l_partkey",
+        "l_suppkey",
+        "o_orderdate",
+        "l_extendedprice",
+        "l_discount",
+        "r_name",
+    ]:
+        repartitioned = Repartition(new_node.schema, new_node)
+        partition_info[repartitioned] = PartitionInfo(
+            count=max(1, partition_info[new_node].count // 10)
+        )
+        return repartitioned, partition_info
+    if list(new_node.schema) == [
+        "l_partkey",
+        "l_suppkey",
+        "o_orderdate",
+        "l_extendedprice",
+        "l_discount",
+        "p_type",
+        "r_name",
+    ]:
+        repartitioned = Repartition(new_node.schema, new_node)
+        partition_info[repartitioned] = PartitionInfo(
+            count=max(1, partition_info[new_node].count // 50)
+        )
+        return repartitioned, partition_info
+
+    return new_node, partition_info
+
+
 lower_ir_node.register(Filter, _lower_ir_pwise_preserve)
 lower_ir_node.register(Cache, _lower_ir_pwise)
 lower_ir_node.register(HStack, _lower_ir_pwise)

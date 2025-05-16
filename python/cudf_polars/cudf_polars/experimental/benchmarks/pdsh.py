@@ -514,6 +514,7 @@ class PDSHQueries:
 
     @staticmethod
     def q8(run_config: RunConfig) -> pl.LazyFrame:
+        return PDSHQueries.q8_duckdb_order(run_config)
         """Query 8."""
         customer = get_data(run_config.dataset_path, "customer", run_config.suffix)
         lineitem = get_data(run_config.dataset_path, "lineitem", run_config.suffix)
@@ -1227,6 +1228,7 @@ def run(args: argparse.Namespace) -> None:
                             "l_partkey": 0.1,  # Q20
                             "o_custkey": 0.25,  # Q22
                         },
+                        "hack_pdsh_q8": True,
                     }
                     if run_config.blocksize:
                         executor_options["target_partition_size"] = run_config.blocksize

@@ -203,6 +203,7 @@ class StreamingExecutor:
     broadcast_join_limit: int = 0
     shuffle_method: ShuffleMethod | None = None
     rapidsmpf_spill: bool = False
+    hack_pdsh_q8: bool = False
 
     def __post_init__(self) -> None:
         if self.scheduler == "synchronous" and self.shuffle_method == "rapidsmpf":
