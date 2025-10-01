@@ -32,7 +32,7 @@ from cudf_polars.containers import Column, DataFrame, DataType
 from cudf_polars.dsl.expressions import rolling, unary
 from cudf_polars.dsl.expressions.base import ExecutionContext
 from cudf_polars.dsl.nodebase import Node
-from cudf_polars.dsl.to_ast import to_ast, to_parquet_filter
+from cudf_polars.dsl.to_ast import to_ast, to_jittable_ast, to_parquet_filter
 from cudf_polars.dsl.tracing import nvtx_annotate_cudf_polars
 from cudf_polars.dsl.utils.reshape import broadcast
 from cudf_polars.dsl.utils.windows import range_window_bounds
@@ -1182,7 +1182,27 @@ class Select(IR):
     ) -> DataFrame:
         """Evaluate and return a dataframe."""
         # Handle any broadcasting
-        columns = [e.evaluate(df) for e in exprs]
+        jittable_exprs = to_jittable_ast(
+            [e.value for e in exprs],
+            name_to_index={n: i for i, n in enumerate(df.column_map)},
+        )
+        input_columns = [c.obj for c in df.columns]
+        columns = []
+        for ast, e in zip(jittable_exprs, exprs, strict=True):
+            if ast is None:
+                columns.append(e.evaluate(df))
+            else:
+                columns.append(
+                    Column(
+                        # TODO: This is not correct.
+                        plc.transform.transform(
+                            input_columns, ast, e.value.dtype, is_ptx=False
+                        ),
+                        e.value.dtype,
+                        name=e.name,
+                    )
+                )
+        # columns = [e.evaluate(df) for e in exprs]
         if should_broadcast:
             columns = broadcast(*columns)
         return DataFrame(columns)
