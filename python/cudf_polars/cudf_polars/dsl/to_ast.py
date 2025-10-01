@@ -17,7 +17,7 @@ from cudf_polars.dsl.traversal import CachingVisitor, reuse_if_unchanged
 from cudf_polars.typing import GenericTransformer
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
 
 # Can't merge these op-mapping dictionaries because scoped enum values
@@ -357,3 +357,44 @@ def insert_colrefs(
         state={"name_to_index": name_to_index, "table_ref": table_ref},
     )
     return mapper(node)
+
+
+def to_jittable_ast(
+    nodes: Sequence[expr.Expr], *, name_to_index: Mapping[str, int]
+) -> list[plc_expr.Expression | None]:
+    """
+    Convert a sequence of nodes to libcudf AST nodes for jit transform.
+
+    Parameters
+    ----------
+    nodes
+        Sequence of nodes to convert.
+    name_to_index
+        Mapping from column names to their index in the table that will be used for evaluation.
+
+    Returns
+    -------
+    List of pylibcudf Expressions for each input expression (or None if
+    that expression could not be converted to ast).
+
+    Notes
+    -----
+    If any of the expressions share common subexpressions, in the returned
+    Expression objects, they will be equal by object identity.
+    """
+    colref_inserter: ExprTransformer = CachingVisitor(
+        _insert_colrefs,
+        state={
+            "name_to_index": name_to_index,
+            "table_ref": plc.expressions.TableReference.LEFT,
+        },
+    )
+    nodes = [colref_inserter(node) for node in nodes]
+    ast_converter: Transformer = CachingVisitor(_to_ast, state={"for_parquet": False})
+    result: list[plc.expressions.Expression | None] = []
+    for node in nodes:
+        try:
+            result.append(ast_converter(node))
+        except (NotImplementedError, KeyError):  # noqa: PERF203
+            result.append(None)
+    return result

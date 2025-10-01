@@ -15,7 +15,12 @@ import cudf_polars.dsl.ir as ir_nodes
 from cudf_polars import Translator
 from cudf_polars.containers import DataType
 from cudf_polars.containers.dataframe import DataFrame, NamedColumn
-from cudf_polars.dsl.to_ast import insert_colrefs, to_ast, to_parquet_filter
+from cudf_polars.dsl.to_ast import (
+    insert_colrefs,
+    to_ast,
+    to_jittable_ast,
+    to_parquet_filter,
+)
 
 
 @pytest.fixture(scope="module")
@@ -111,3 +116,34 @@ def test_to_parquet_filter_with_colref_raises():
 
     with pytest.raises(TypeError):
         to_parquet_filter(colref)
+
+
+def test_to_jittable_ast_partial_success():
+    exprA = expr_nodes.Col(DataType(pl.datatypes.Int8()), "a")
+    exprB = expr_nodes.StringFunction(
+        DataType(pl.datatypes.String()),
+        expr_nodes.StringFunction.Name.Lowercase,
+        (),
+        expr_nodes.Col(DataType(pl.datatypes.String()), "b"),
+    )
+    name_to_index = {"a": 0, "b": 1}
+
+    ast = to_jittable_ast([exprA, exprB], name_to_index=name_to_index)
+
+    assert len(ast) == 2
+    assert ast[1] is None
+    assert isinstance(ast[0], plc.expressions.ColumnReference)
+
+
+def test_to_jittable_ast_cse():
+    expr = expr_nodes.BinOp(
+        DataType(pl.datatypes.Int8()),
+        plc.binaryop.BinaryOperator.ADD,
+        expr_nodes.Col(DataType(pl.datatypes.Int8()), "a"),
+        expr_nodes.Col(DataType(pl.datatypes.Int8()), "b"),
+    )
+    name_to_index = {"a": 0, "b": 1}
+
+    a, b = to_jittable_ast([expr, expr], name_to_index=name_to_index)
+    assert isinstance(a, plc.expressions.Operation)
+    assert a is b
