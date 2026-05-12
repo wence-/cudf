@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -205,7 +204,7 @@ async def _collect_small_side_for_broadcast(
             for s_id in range(len(chunks)):
                 inserter.insert(s_id, chunks.pop(0))
         stream = ir_context.get_cuda_stream()
-        gathered = await allgather.extract_concatenated(stream)
+        gathered = await allgather.extract_concatenated(stream, ir_context=ir_context)
         # When every rank inserted zero chunks, the AllGather has no schema
         # to infer and returns a 0 column table. Substitute a properly typed
         # empty table for the small side so downstream joins still match the
@@ -278,7 +277,7 @@ async def _broadcast_join_large_chunk(
         await reserve_memory(context, size=input_bytes, net_memory_delta=0)
     ):
         for sdf in dfs_to_join:
-            result = await asyncio.to_thread(
+            result = await ir_context.to_thread(
                 ir.do_evaluate,
                 *ir._non_child_args,
                 *([large_df, sdf] if broadcast_side == "right" else [sdf, large_df]),
@@ -481,7 +480,7 @@ async def _join_chunks(
         with opaque_memory_usage(
             await reserve_memory(context, size=input_bytes, net_memory_delta=0)
         ):
-            df = await asyncio.to_thread(
+            df = await ir_context.to_thread(
                 ir.do_evaluate,
                 *ir._non_child_args,
                 chunk_to_frame(left_chunk, left),

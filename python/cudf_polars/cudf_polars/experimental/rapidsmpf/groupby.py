@@ -321,7 +321,7 @@ async def _tree_reduce(
         aggregated = await evaluate_chunk(
             context,
             TableChunk.from_pylibcudf_table(
-                await allgather.extract_concatenated(stream),
+                await allgather.extract_concatenated(stream, ir_context=ir_context),
                 stream,
                 exclusive_view=True,
                 br=context.br(),

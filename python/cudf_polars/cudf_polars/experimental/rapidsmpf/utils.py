@@ -428,7 +428,7 @@ async def evaluate_chunk(
     )
     with opaque_memory_usage(extra):
         for single_ir in irs:
-            chunk = await asyncio.to_thread(
+            chunk = await ir_context.to_thread(
                 _evaluate_chunk_sync, chunk, single_ir, ir_context, context.br()
             )
         return chunk
@@ -465,7 +465,7 @@ async def concat_batch(
         net_memory_delta=0,
     )
     with opaque_memory_usage(extra):
-        df = await asyncio.to_thread(
+        df = await ir_context.to_thread(
             _concat,
             *[
                 DataFrame.from_table(
