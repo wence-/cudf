@@ -48,11 +48,12 @@ async def _test_allgather(engine) -> None:
                 ),
             )
 
-    ir_context = IRExecutionContext(ThreadPoolExecutor(max_workers=1))
-    # Extract concatenated result
-    result = await allgather.extract_concatenated(
-        stream, ordered=True, ir_context=ir_context
-    )
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        ir_context = IRExecutionContext(executor)
+        # Extract concatenated result
+        result = await allgather.extract_concatenated(
+            stream, ordered=True, ir_context=ir_context
+        )
 
     # Verify the concatenated table has the expected shape
     assert result.num_rows() == 600  # 100 + 200 + 300
