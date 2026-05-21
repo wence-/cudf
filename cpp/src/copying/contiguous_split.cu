@@ -8,6 +8,7 @@
 #include <cudf/contiguous_split.hpp>
 #include <cudf/detail/contiguous_split.hpp>
 #include <cudf/detail/copy.hpp>
+#include <cudf/detail/get_value.cuh>
 #include <cudf/detail/iterator.cuh>
 #include <cudf/detail/null_mask.hpp>
 #include <cudf/detail/nvtx/ranges.hpp>
@@ -1004,6 +1005,140 @@ struct batch_byte_size_function {
     return util::round_up_unsafe(bytes, split_align);
   }
 };
+
+std::size_t packed_buffer_size(std::size_t bytes)
+{
+  return util::round_up_unsafe(bytes, split_align);
+}
+
+int64_t get_offset_value(column_view const& offsets, size_type index, rmm::cuda_stream_view stream)
+{
+  auto const otid = offsets.type().id();
+  CUDF_EXPECTS(otid == type_id::INT64 || otid == type_id::INT32,
+               "Offsets must be of type INT32 or INT64",
+               std::invalid_argument);
+  return otid == type_id::INT64 ? cudf::detail::get_value<int64_t>(offsets, index, stream)
+                                : cudf::detail::get_value<int32_t>(offsets, index, stream);
+}
+
+std::size_t packed_offsets_buffer_size(column_view const& offsets, size_type num_rows)
+{
+  auto const num_elements = num_rows > 0 ? num_rows + 1 : 0;
+  return packed_buffer_size(static_cast<std::size_t>(num_elements) * cudf::size_of(offsets.type()));
+}
+
+std::size_t packed_column_size(column_view const& col,
+                               size_type row_start,
+                               size_type row_end,
+                               rmm::cuda_stream_view stream);
+
+std::size_t packed_string_column_size(column_view const& col,
+                                      size_type row_start,
+                                      size_type row_end,
+                                      rmm::cuda_stream_view stream)
+{
+  auto const num_rows = row_end - row_start;
+  auto size           = std::size_t{0};
+
+  if (col.nullable()) {
+    size += packed_buffer_size(cudf::bitmask_allocation_size_bytes(num_rows));
+  }
+
+  auto const has_offsets_child = col.num_children() > 0;
+  if (not has_offsets_child) {
+    return size + packed_buffer_size(static_cast<std::size_t>(num_rows));
+  }
+
+  CUDF_EXPECTS(col.num_children() == 1, "Encountered malformed string column");
+  auto const offsets = strings_column_view{col}.offsets();
+  CUDF_EXPECTS(not offsets.nullable(), "Encountered nullable string offsets column");
+
+  auto const chars_size = [&] {
+    if (num_rows == 0) { return std::size_t{0}; }
+    auto const begin = get_offset_value(offsets, row_start, stream);
+    auto const end   = get_offset_value(offsets, row_end, stream);
+    CUDF_EXPECTS(end >= begin, "Encountered malformed string offsets column");
+    return static_cast<std::size_t>(end - begin);
+  }();
+
+  return size + packed_buffer_size(chars_size) + packed_offsets_buffer_size(offsets, num_rows);
+}
+
+std::size_t packed_list_column_size(column_view const& col,
+                                    size_type row_start,
+                                    size_type row_end,
+                                    rmm::cuda_stream_view stream)
+{
+  CUDF_EXPECTS(col.num_children() == 2, "Encountered malformed list column");
+
+  auto const num_rows = row_end - row_start;
+  auto size           = std::size_t{0};
+
+  if (col.nullable()) {
+    size += packed_buffer_size(cudf::bitmask_allocation_size_bytes(num_rows));
+  }
+
+  auto const lcv     = lists_column_view{col};
+  auto const offsets = lcv.offsets();
+  size += packed_offsets_buffer_size(offsets, num_rows);
+
+  if (num_rows == 0) { return size; }
+
+  auto const child_start = get_offset_value(offsets, row_start, stream);
+  auto const child_end   = get_offset_value(offsets, row_end, stream);
+  CUDF_EXPECTS(child_start >= 0 && child_end >= child_start && child_end <= lcv.child().size(),
+               "Encountered malformed list offsets column");
+
+  return size + packed_column_size(lcv.child(),
+                                   static_cast<size_type>(child_start),
+                                   static_cast<size_type>(child_end),
+                                   stream);
+}
+
+std::size_t packed_struct_column_size(column_view const& col,
+                                      size_type row_start,
+                                      size_type row_end,
+                                      rmm::cuda_stream_view stream)
+{
+  auto const num_rows = row_end - row_start;
+  auto size           = std::size_t{0};
+
+  if (col.nullable()) {
+    size += packed_buffer_size(cudf::bitmask_allocation_size_bytes(num_rows));
+  }
+
+  return std::accumulate(
+    col.child_begin(), col.child_end(), size, [row_start, row_end, stream](auto total, auto child) {
+      return total + packed_column_size(child, row_start, row_end, stream);
+    });
+}
+
+std::size_t packed_column_size(column_view const& col,
+                               size_type row_start,
+                               size_type row_end,
+                               rmm::cuda_stream_view stream)
+{
+  CUDF_EXPECTS(row_start >= 0 && row_end >= row_start, "Invalid packed column row range");
+
+  switch (col.type().id()) {
+    case type_id::STRING: return packed_string_column_size(col, row_start, row_end, stream);
+    case type_id::LIST: return packed_list_column_size(col, row_start, row_end, stream);
+    case type_id::STRUCT: return packed_struct_column_size(col, row_start, row_end, stream);
+    case type_id::DICTIONARY32: CUDF_FAIL("Unsupported type");
+    default: break;
+  }
+
+  auto const num_rows = row_end - row_start;
+  auto size           = std::size_t{0};
+  if (col.nullable()) {
+    size += packed_buffer_size(cudf::bitmask_allocation_size_bytes(num_rows));
+  }
+  if (cudf::is_fixed_width(col.type())) {
+    size += packed_buffer_size(static_cast<std::size_t>(num_rows) * cudf::size_of(col.type()));
+  }
+
+  return size;
+}
 
 /**
  * @brief Get the input buffer index given the output buffer index.
@@ -2169,16 +2304,16 @@ std::unique_ptr<chunked_pack> chunked_pack::create(cudf::table_view const& input
 
 std::size_t packed_size(cudf::table_view const& input,
                         rmm::cuda_stream_view stream,
-                        rmm::device_async_resource_ref temp_mr)
+                        rmm::device_async_resource_ref)
 {
+  CUDF_FUNC_RANGE();
   // Handle empty table cases
   if (input.num_columns() == 0 || input.num_rows() == 0) { return 0; }
 
-  auto result = compute_num_bufs_and_splits(input, {}, stream, temp_mr);
-  auto const& partition_buf_size_and_dst_buf_info = std::get<2>(result);
-
-  // Return the total size for the single partition
-  return partition_buf_size_and_dst_buf_info->h_buf_sizes[0];
+  return std::accumulate(
+    input.begin(), input.end(), std::size_t{0}, [stream](auto total, auto const& col) {
+      return total + packed_column_size(col, col.offset(), col.offset() + col.size(), stream);
+    });
 }
 
 };  // namespace cudf
