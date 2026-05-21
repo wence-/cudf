@@ -651,12 +651,20 @@ class RunConfig:
         if any_success:
             total_mean_time = sum(
                 mean(
-                    record.duration for record in records if record.status == "success"
+                    record.duration for record in records if isinstance(record, SuccessRecord)
                 )
                 for records in self.records.values()
                 if records
             )
             print(f"Total mean time across all queries: {total_mean_time:.4f} seconds")
+            total_min_time = sum(
+                min(
+                    record.duration for record in records if isinstance(record, SuccessRecord)
+                )
+                for records in self.records.values()
+                if records
+            )
+            print(f"Total min time across all queries: {total_min_time:.4f} seconds")
         else:
             print("No successful queries")
 
