@@ -168,6 +168,10 @@ class approx_distinct_count {
                         null_policy null_handling = null_policy::EXCLUDE,
                         nan_policy nan_handling   = nan_policy::NAN_IS_NULL);
 
+  static approx_distinct_count const view(cuda::std::span<cuda::std::byte const> sketch_span,
+                                          std::int32_t precision,
+                                          null_policy null_handling = null_policy::EXCLUDE,
+                                          nan_policy nan_handling   = nan_policy::NAN_IS_NULL);
   ~approx_distinct_count();
 
   approx_distinct_count(approx_distinct_count const&)            = delete;
