@@ -60,7 +60,7 @@ from cudf_polars.streaming.actor_graph.utils import (
     TableSizeStats,
     _sample_chunks,
     _update_ordering_indices,
-    allgather_reduce,
+    aggregate_table_size_stats,
     chunk_to_frame,
     empty_table_chunk,
     gather_in_task_group,
@@ -251,7 +251,7 @@ async def broadcast_join_actor(
         trace_ir=ir,
         ir_context=ir_context,
     ) as tracer:
-        await _broadcast_join(
+        await broadcast_join(
             context,
             comm,
             ir,
@@ -392,7 +392,7 @@ async def _broadcast_join_large_chunk(
     return output_rows
 
 
-async def _broadcast_join(
+async def broadcast_join(
     context: Context,
     comm: Communicator,
     ir: Join,
@@ -603,7 +603,7 @@ def make_prefilter_execution(
                 projected_domain,
             )
             execution.add_task(
-                _broadcast_join(
+                broadcast_join(
                     context,
                     comm,
                     semi_join,
@@ -1080,43 +1080,6 @@ def _make_shuffle_strategy(
     )
 
 
-async def aggregate_estimates(
-    context: Context,
-    comm: Communicator,
-    samples: tuple[TableSizeStats, ...],
-    collective_id: int,
-) -> tuple[TableSizeStats, ...]:
-    """Aggregate table-size and row estimates across ranks."""
-    # AllGather size, row, chunk count, and completeness estimates across ranks.
-    totals = await allgather_reduce(
-        context,
-        comm,
-        collective_id,
-        *(
-            value
-            for sample in samples
-            for value in (
-                sample.total_size,
-                sample.total_rows,
-                sample.total_chunks,
-                int(sample.is_complete),
-            )
-        ),
-    )
-    totals_iter = iter(totals)
-    return tuple(
-        TableSizeStats(
-            chunks=sample.chunks,
-            total_size=next(totals_iter),
-            total_rows=next(totals_iter),
-            total_chunks=next(totals_iter),
-            is_complete=next(totals_iter) == comm.nranks,
-            cardinality=sample.cardinality,
-        )
-        for sample in samples
-    )
-
-
 def _choose_strategy_from_samples(
     comm: Communicator,
     ir: Join,
@@ -1400,7 +1363,7 @@ async def collect_samples(
             for input_, candidate in sampling_inputs
         )
     )
-    samples = await aggregate_estimates(
+    samples = await aggregate_table_size_stats(
         context,
         comm,
         tuple(local_samples),
@@ -1734,7 +1697,7 @@ async def join_actor(
 
             if isinstance(strategy, BroadcastJoinStrategy):
                 actor_tasks.append(
-                    _broadcast_join(
+                    broadcast_join(
                         context,
                         comm,
                         ir,
