@@ -206,32 +206,61 @@ def test_io_tasks_wait_for_memory_admission(
 
 
 @pytest.mark.parametrize(
-    "broadcast_limit,bloom_filter_max_size,join_strategy,method,reason,output_rows",
+    "ordered,broadcast_limit,bloom_filter_max_size,join_strategy,method,reason,domain_rows,output_rows",
     [
-        (1, 32 * 1024 * 1024, "shuffle", "bloom", "bloom_fits", 10),
-        (64, 0, "shuffle", "broadcast_semi_join", "exact_domain_fits", 10),
+        (False, 1, 32 * 1024 * 1024, "shuffle", "bloom", "bloom_fits", 1, 10),
+        (False, 64, 0, "shuffle", "broadcast_semi_join", "exact_domain_fits", 1, 10),
         (
+            False,
             1_000_000,
             32 * 1024 * 1024,
             "broadcast_left",
             "skip",
             "target_not_redistributed",
+            1,
+            None,
+        ),
+        (
+            True,
+            1,
+            32 * 1024 * 1024,
+            "ordered",
+            "skip",
+            "target_not_redistributed",
+            None,
             None,
         ),
     ],
-    ids=["bloom", "exact", "skip"],
+    ids=["bloom", "exact", "broadcast-skip", "ordered-skip"],
 )
 def test_local_join_prefilter_trace_records_decision_and_effect(
+    tmp_path: pathlib.Path,
     timeout_seconds: int,
+    ordered: bool,  # noqa: FBT001
     broadcast_limit: int,
     bloom_filter_max_size: int,
     join_strategy: str,
     method: str,
     reason: str,
+    domain_rows: int | None,
     output_rows: int | None,
 ) -> None:
     """Trace a direct-input join prefilter selected through the public engine."""
     pytest.importorskip("structlog")
+    domain_path = tmp_path / "domain.parquet"
+    target_path = tmp_path / "target.parquet"
+    pl.DataFrame(
+        {
+            "key": range(100),
+            "active": [i % 10 == 0 for i in range(100)],
+        }
+    ).write_parquet(domain_path)
+    pl.DataFrame(
+        {
+            "key": range(1_000),
+            "value": range(1_000),
+        }
+    ).write_parquet(target_path)
     code = textwrap.dedent(f"""\
     import json
     import os
@@ -244,14 +273,24 @@ def test_local_join_prefilter_trace_records_decision_and_effect(
 
     from cudf_polars.engine.spmd import SPMDEngine
 
-    domain = (
-        pl.LazyFrame({{"key": [1, 99], "active": [True, False]}})
-        .filter("active")
-        .select("key")
-    )
-    target = pl.LazyFrame(
-        {{"key": [i % 100 for i in range(1_000)], "value": range(1_000)}}
-    )
+    ordered = {ordered!r}
+    if ordered:
+        domain = (
+            pl.scan_parquet({str(domain_path)!r})
+            .filter("active")
+            .select("key")
+            .set_sorted("key")
+        )
+        target = pl.scan_parquet({str(target_path)!r}).set_sorted("key")
+    else:
+        domain = (
+            pl.LazyFrame({{"key": [1, 99], "active": [True, False]}})
+            .filter("active")
+            .select("key")
+        )
+        target = pl.LazyFrame(
+            {{"key": [i % 100 for i in range(1_000)], "value": range(1_000)}}
+        )
     query = domain.join(target, on="key")
     options = {{
         "join_filter_pushdown": {{
@@ -259,8 +298,8 @@ def test_local_join_prefilter_trace_records_decision_and_effect(
             "bloom_filter_max_size": {bloom_filter_max_size},
         }},
         "broadcast_limit": {broadcast_limit},
-        "target_partition_size": 64,
-        "max_rows_per_partition": 100,
+        "target_partition_size": 1 << 30 if ordered else 64,
+        "max_rows_per_partition": 1_000_000 if ordered else 100,
     }}
     with SPMDEngine(executor_options=options) as engine:
         with structlog.testing.capture_logs() as logs:
@@ -296,16 +335,15 @@ def test_local_join_prefilter_trace_records_decision_and_effect(
 
     assert record["result_rows"] == 10
     assert record["join_strategy"] == join_strategy
-    assert (
-        record["prefilter"].items()
-        >= {
-            "target_side": "right",
-            "domain_side": "left",
-            "method": method,
-            "reason": reason,
-            "domain_rows": 1,
-        }.items()
-    )
+    expected_prefilter: dict[str, str | int] = {
+        "target_side": "right",
+        "domain_side": "left",
+        "method": method,
+        "reason": reason,
+    }
+    if domain_rows is not None:
+        expected_prefilter["domain_rows"] = domain_rows
+    assert record["prefilter"].items() >= expected_prefilter.items()
     if output_rows is None:
         assert "input_rows" not in record["prefilter"]
         assert "output_rows" not in record["prefilter"]
