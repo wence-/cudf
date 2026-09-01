@@ -844,8 +844,8 @@ class StreamingExecutor:
         :class:`~cudf_polars.utils.config.DynamicPlanningOptions` for more.
     join_filter_pushdown
         Options controlling the logical join-domain prefilter rewrite. See
-        :class:`~cudf_polars.utils.config.JoinFilterPushdownOptions` for more.
-        ``None`` disables the rewrite.
+        :class:`~cudf_polars.utils.config.JoinFilterPushdownOptions` for
+        more. Disabled by default (or by explicitly providing ``None``).
 
         Enable through environment variables with
         ``CUDF_POLARS__EXECUTOR__JOIN_FILTER_PUSHDOWN=1``.
