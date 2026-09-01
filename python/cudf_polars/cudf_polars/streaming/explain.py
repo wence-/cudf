@@ -91,6 +91,7 @@ def explain_query(
     q: pl.LazyFrame,
     engine: pl.GPUEngine,
     *,
+    optimized: bool = True,
     physical: bool = True,
     executor: concurrent.futures.Executor | None = None,
 ) -> str:
@@ -103,6 +104,9 @@ def explain_query(
         The LazyFrame to explain.
     engine : pl.GPUEngine
         The configured GPU engine to use.
+    optimized
+        If True and showing the logical plan, run cudf-polars specific
+        query optimization.
     physical : bool, default True
         If True, show the physical (lowered) plan.
         If False, show the logical (pre-lowering) plan.
@@ -141,7 +145,8 @@ def explain_query(
             # Include row-count statistics for the logical plan
             with cm:
                 stats = collect_statistics(ir, config, executor)
-            ir = optimize_with_stats(ir, config, stats)
+            if optimized:
+                ir = optimize_with_stats(ir, config, stats)
             return _repr_ir_tree(ir, stats=stats)
         else:
             return _repr_ir_tree(ir)

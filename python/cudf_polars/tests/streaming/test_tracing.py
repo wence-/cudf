@@ -485,7 +485,7 @@ def test_indirect_prefilter_trace_records_decision_and_effect(
     bloom_filter_max_size: int,
     method: str,
     reason: str,
-    domain_rows: int | None,
+    domain_rows: int,
 ) -> None:
     """Trace a composite prefilter pushed below an intervening join."""
     pytest.importorskip("structlog")
@@ -592,16 +592,12 @@ def test_indirect_prefilter_trace_records_decision_and_effect(
             "domain_rows": domain_rows,
         }.items()
     )
-    if method == "skip":
-        assert "input_rows" not in record["prefilter"]
-        assert "output_rows" not in record["prefilter"]
+    assert record["prefilter"]["estimated_cardinality"] == domain_rows
+    assert record["prefilter"]["input_rows"] == 180
+    if method == "broadcast_semi_join":
+        assert record["prefilter"]["output_rows"] == 45
     else:
-        assert record["prefilter"]["estimated_cardinality"] == domain_rows
-        assert record["prefilter"]["input_rows"] == 180
-        if method == "broadcast_semi_join":
-            assert record["prefilter"]["output_rows"] == 45
-        else:
-            assert 45 <= record["prefilter"]["output_rows"] < 180
+        assert 45 <= record["prefilter"]["output_rows"] < 180
 
 
 def test_structlog_disabled_by_default(timeout_seconds: int):
