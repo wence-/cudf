@@ -13,6 +13,8 @@ from cudf_streaming import BloomFilter
 from cudf_streaming.channel_metadata import ChannelMetadata
 from cudf_streaming.table_chunk import TableChunk
 from pylibcudf.hashing import LIBCUDF_DEFAULT_HASH_SEED
+from rapidsmpf.memory.memory_reservation import opaque_memory_usage
+from rapidsmpf.streaming.core.memory_reserve_or_wait import reserve_memory
 from rapidsmpf.streaming.core.message import Message
 
 from cudf_polars.streaming.actor_graph.utils import (
@@ -87,16 +89,18 @@ class PrefilterDecision:
         return result
 
 
-def project_key_chunk(
+async def project_key_chunk(
     context: Context, chunk: TableChunk, indices: Iterable[int]
 ) -> TableChunk:
     """Copy selected columns into an owning key chunk."""
-    columns = chunk.table_view().columns()
-    key_table = plc.Table([columns[index] for index in indices]).copy(
-        stream=chunk.stream, mr=context.br().device_mr
-    )
+    columns = tuple(chunk.table_view().columns()[index] for index in indices)
+    bytes = sum(column.device_buffer_size() for column in columns)
+    with opaque_memory_usage(
+        await reserve_memory(context, size=bytes, net_memory_delta=0)
+    ):
+        table = plc.Table(columns).copy(stream=chunk.stream, mr=context.br().device_mr)
     return TableChunk.from_pylibcudf_table(
-        key_table,
+        table,
         chunk.stream,
         exclusive_view=True,
         br=context.br(),
@@ -133,7 +137,7 @@ async def buffer_and_project_keys(
                 chunk = await TableChunk.from_message(
                     msg, br=context.br()
                 ).make_available_or_wait(context, net_memory_delta=0)
-                key_chunk = project_key_chunk(context, chunk, indices)
+                key_chunk = await project_key_chunk(context, chunk, indices)
                 chunks.insert(Message(sequence_number, chunk))
                 await ch_keys.send(context, Message(sequence_number, key_chunk))
 
