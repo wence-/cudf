@@ -944,7 +944,7 @@ class StreamingExecutor:
         default_factory=DynamicPlanningOptions
     )
     join_filter_pushdown: JoinFilterPushdownOptions | None = dataclasses.field(
-        default_factory=JoinFilterPushdownOptions
+        default=None
     )
     max_concurrent_io_tasks: MaxConcurrentIOTasks = dataclasses.field(
         default_factory=_make_default_factory(
