@@ -325,21 +325,19 @@ texinfo_documents = [
 ]
 
 
-# Example configuration for intersphinx: refer to the Python standard library.
 intersphinx_mapping = {
     "cupy": ("https://docs.cupy.dev/en/stable/", None),
     "dlpack": ("https://dmlc.github.io/dlpack/latest/", None),
     "nanoarrow": ("https://arrow.apache.org/nanoarrow/latest/", None),
     "numpy": ("https://numpy.org/doc/stable/", None),
-    # Temporarily disable nitpick warnings for pandas: https://github.com/pandas-dev/pandas/issues/64584
-    # "pandas": (
-    #     "https://pandas.pydata.org/pandas-docs/stable/",
-    #     None,
-    # ),
+    "pandas": (
+        "https://pandas.pydata.org/pandas-docs/stable/",
+        None,
+    ),
     "polars": ("https://docs.pola.rs/api/python/stable/", None),
     "pyarrow": ("https://arrow.apache.org/docs/", None),
     "python": ("https://docs.python.org/3/", None),
-    "rmm": ("https://docs.rapids.ai/api/rmm/nightly/", None),
+    "rmm": ("https://docs.nvidia.com/rmm/stable/", None),
     "typing_extensions": (
         "https://typing-extensions.readthedocs.io/en/stable/",
         None,
@@ -694,11 +692,8 @@ nitpick_ignore = [
     ("py:class", "SupportsCudaArrayInterface"),
     ("py:class", "T"),
 ]
-# Temporarily disable nitpick warnings for pandas: https://github.com/pandas-dev/pandas/issues/64584
+
 nitpick_ignore_regex = [
-    ("py:.*", "pandas.*"),
-    ("py:.*", "pd.*"),
-    ("ref.*", ".*pandas.*"),
     # External libs without configured intersphinx inventories.
     ("py:.*", r"rapidsmpf(\..*)?"),
     ("py:.*", r"kvikio(\..*)?"),
