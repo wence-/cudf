@@ -83,11 +83,10 @@ intersphinx_mapping = {
     "cupy": ("https://docs.cupy.dev/en/stable/", None),
     "numpy": ("https://numpy.org/doc/stable/", None),
     "pyarrow": ("https://arrow.apache.org/docs/", None),
-    "cudf": ("https://docs.rapids.ai/api/cudf/stable/", None),
+    "cudf": ("https://docs.nvidia.com/cudf/stable/", None),
     "dask": ("https://docs.dask.org/en/stable/", None),
-    # Temporarily disable pandas intersphinx: https://github.com/pandas-dev/pandas/issues/64584
-    # "pandas": ("https://pandas.pydata.org/docs/", None),
-    "dask-cuda": ("https://docs.rapids.ai/api/dask-cuda/stable/", None),
+    "pandas": ("https://pandas.pydata.org/docs/", None),
+    "dask-cuda": ("https://docs.nvidia.com/dask-cuda/stable/", None),
 }
 
 numpydoc_show_inherited_class_members = True
