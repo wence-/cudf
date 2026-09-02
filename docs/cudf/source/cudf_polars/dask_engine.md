@@ -194,5 +194,5 @@ created inside an `rrun` cluster.
 
 [dask-distributed]: https://distributed.dask.org/en/stable/
 [dask-cli]: https://docs.dask.org/en/latest/deploying-cli.html
-[dask-cuda]: https://docs.nvidia.com/dask-cuda/stable/
-[dask-cuda-worker]: https://docs.nvidia.com/dask-cuda/stable/quickstart/#dask-cuda-worker
+[dask-cuda]: inv:dask-cuda:std:doc:#index
+[dask-cuda-worker]: inv:dask-cuda:std:doc:#quickstart
