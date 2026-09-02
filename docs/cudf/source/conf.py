@@ -338,6 +338,7 @@ intersphinx_mapping = {
     "pyarrow": ("https://arrow.apache.org/docs/", None),
     "python": ("https://docs.python.org/3/", None),
     "rmm": ("https://docs.nvidia.com/rmm/stable/", None),
+    "rapidsmpf": ("https://docs.nvidia.com/rapidsmpf/stable/", None),
     "typing_extensions": (
         "https://typing-extensions.readthedocs.io/en/stable/",
         None,

@@ -110,4 +110,4 @@ constructing the GPU engine for queries.
 
 For the full list of engine configuration options, including `target_partition_size`
 and `max_concurrent_io_tasks`, see {doc}`options`. For the full list of memory
-and spill configuration options see the [RapidsMPF configuration reference](https://docs.rapids.ai/api/rapidsmpf/stable/configuration/#general).
+and spill configuration options see the [RapidsMPF configuration reference](https://docs.nvidia.com/rapidsmpf/stable/configuration/#general).
