@@ -330,18 +330,17 @@ texinfo_documents = [
 
 intersphinx_mapping = {
     "cupy": ("https://docs.cupy.dev/en/stable/", None),
+    "dask-cuda": (f"https://docs.nvidia.com/dask-cuda/{version}/", None),
     "dlpack": ("https://dmlc.github.io/dlpack/latest/", None),
+    "kvikio": (f"https://docs.nvidia.com/kvikio/{version}/", None),
     "nanoarrow": ("https://arrow.apache.org/nanoarrow/latest/", None),
     "numpy": ("https://numpy.org/doc/stable/", None),
-    "pandas": (
-        "https://pandas.pydata.org/pandas-docs/stable/",
-        None,
-    ),
+    "pandas": ("https://pandas.pydata.org/pandas-docs/stable/", None),
     "polars": ("https://docs.pola.rs/api/python/stable/", None),
     "pyarrow": ("https://arrow.apache.org/docs/", None),
     "python": ("https://docs.python.org/3/", None),
-    "rmm": ("https://docs.nvidia.com/rmm/stable/", None),
-    "rapidsmpf": ("https://docs.nvidia.com/rapidsmpf/stable/", None),
+    "rmm": (f"https://docs.nvidia.com/rmm/{version}/", None),
+    "rapidsmpf": (f"https://docs.nvidia.com/rapidsmpf/{version}/", None),
     "typing_extensions": (
         "https://typing-extensions.readthedocs.io/en/stable/",
         None,
