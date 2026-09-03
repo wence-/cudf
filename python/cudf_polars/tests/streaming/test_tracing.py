@@ -20,6 +20,7 @@ from cudf_streaming.table_chunk import TableChunk
 
 from cudf_polars.containers import DataFrame
 from cudf_polars.streaming.actor_graph.tracing import ActorTracer, send_chunk
+from cudf_polars.utils.versions import POLARS_VERSION_LT_138
 
 if TYPE_CHECKING:
     import pathlib
@@ -234,6 +235,7 @@ def test_io_tasks_wait_for_memory_admission(
     ids=["bloom", "exact", "broadcast-skip", "ordered-skip"],
 )
 def test_local_join_prefilter_trace_records_decision_and_effect(
+    request: pytest.FixtureRequest,
     tmp_path: pathlib.Path,
     timeout_seconds: int,
     ordered: bool,  # noqa: FBT001
@@ -247,6 +249,11 @@ def test_local_join_prefilter_trace_records_decision_and_effect(
 ) -> None:
     """Trace a direct-input join prefilter selected through the public engine."""
     pytest.importorskip("structlog")
+    if ordered and POLARS_VERSION_LT_138:
+        request.applymarker(
+            pytest.mark.xfail(reason="set_sorted lowers to unsupported hint ir")
+        )
+
     domain_path = tmp_path / "domain.parquet"
     target_path = tmp_path / "target.parquet"
     pl.DataFrame(
