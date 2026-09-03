@@ -112,4 +112,4 @@ For the full list of engine configuration options, including `target_partition_s
 and `max_concurrent_io_tasks`, see {doc}`options`. For the full list of memory
 and spill configuration options see the [RapidsMPF configuration reference][rapidsmpf-config].
 
-[rapidsmpf-config]: inv:rapidsmpf:std:doc:#configuration
+[rapidsmpf-config]: inv:rapidsmpf:std:label:#configuration:general
