@@ -21,12 +21,11 @@ as the ``"cudf"`` dataframe backend for
   of the GPU and networking hardware.
 
 If you are familiar with Dask and `pandas <pandas.pydata.org>`__ or
-`cuDF <https://docs.nvidia.com/cudf/stable/>`__, then Dask cuDF
+:doc:`cuDF <cudf:cudf/index>`, then Dask cuDF
 should feel familiar to you. If not, we recommend starting with `10
 minutes to Dask
 <https://docs.dask.org/en/stable/10-minutes-to-dask.html>`__ followed
-by `10 minutes to cuDF and Dask cuDF
-<https://docs.nvidia.com/cudf/stable/cudf/10min/>`__.
+by :doc:`10 minutes to cuDF and Dask cuDF <cudf:cudf/10min>`.
 
 After reviewing the sections below, please see the
 :ref:`Best Practices <best-practices>` page for further guidance on
@@ -195,8 +194,7 @@ to define a client object. For example::
 
 Please see the :doc:`dask-cuda:index`
 documentation for more information about deploying GPU-aware clusters
-(including `best practices
-<https://docs.nvidia.com/dask-cuda/stable/examples/best-practices/>`__).
+(including :doc:`best practices <dask-cuda:examples/best-practices>`).
 
 
 API Reference
@@ -204,7 +202,7 @@ API Reference
 
 Generally speaking, Dask cuDF tries to offer exactly the same API as
 Dask DataFrame. There are, however, some minor differences mostly because
-cuDF does not `perfectly mirror <https://docs.nvidia.com/cudf/stable/cudf/PandasCompat/>`__
+cuDF does not :doc:`perfectly mirror <cudf:cudf/PandasCompat>`
 the pandas API, or because cuDF provides additional configuration
 flags (these mostly occur in data reading and writing interfaces).
 

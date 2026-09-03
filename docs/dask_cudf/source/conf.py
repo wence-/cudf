@@ -87,6 +87,7 @@ intersphinx_mapping = {
     "dask": ("https://docs.dask.org/en/stable/", None),
     "pandas": ("https://pandas.pydata.org/docs/", None),
     "dask-cuda": (f"https://docs.nvidia.com/dask-cuda/{version}/", None),
+    "rmm": (f"https://docs.nvidia.com/rmm/{version}/", None),
 }
 
 numpydoc_show_inherited_class_members = True
