@@ -12,8 +12,7 @@ the cuDF library directly should be considered.
   from increased performance by using cuDF directly.
 
 - cuDF does offer some functions and methods that pandas does not. For
-  example, cuDF has a [`.list`
-  accessor](https://docs.nvidia.com/cudf/stable/cudf/api_docs/series/#list-handling)
+  example, cuDF has a {ref}`.list accessor <cudf/api_docs/series:list-handling>`
   for working with list-like data. If you need access to the
   additional functionality in cuDF, you will need to use the cuDF
   package directly.

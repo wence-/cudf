@@ -16,7 +16,7 @@ suite, and is composed of multiple sub-projects:
      - A Python library providing a `pandas <https://pandas.pydata.org/>`_-like DataFrame API and a zero-code change accelerator, `cudf.pandas <cudf_pandas/index.html>`_, for existing pandas code.
    * - `cudf-polars <cudf_polars/index.html>`_
      - A Python library providing a GPU engine for `Polars <https://pola.rs/>`_.
-   * - `dask-cudf <https://docs.nvidia.com/dask-cudf/stable/>`_
+   * - :doc:`dask-cudf:index`
      - A Python library providing a GPU backend for `Dask <https://www.dask.org/>`_ DataFrames.
    * - `libcudf <libcudf/index.html>`_
      - A CUDA C++ library with `Apache Arrow <https://arrow.apache.org/>`_ compliant data structures and fundamental algorithms for tabular data.

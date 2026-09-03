@@ -331,6 +331,7 @@ texinfo_documents = [
 intersphinx_mapping = {
     "cupy": ("https://docs.cupy.dev/en/stable/", None),
     "dask-cuda": (f"https://docs.nvidia.com/dask-cuda/{version}/", None),
+    "dask-cudf": (f"https://docs.nvidia.com/dask-cudf/{version}/", None),
     "dlpack": ("https://dmlc.github.io/dlpack/latest/", None),
     "kvikio": (f"https://docs.nvidia.com/kvikio/{version}/", None),
     "nanoarrow": ("https://arrow.apache.org/nanoarrow/latest/", None),

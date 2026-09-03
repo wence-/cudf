@@ -59,7 +59,7 @@ html_theme = "nvidia_sphinx_theme"
 htmlhelp_basename = "dask-cudfdoc"
 html_use_modindex = True
 
-html_static_path = ["_static"]
+html_static_path = []
 
 pygments_style = "sphinx"
 
@@ -83,10 +83,10 @@ intersphinx_mapping = {
     "cupy": ("https://docs.cupy.dev/en/stable/", None),
     "numpy": ("https://numpy.org/doc/stable/", None),
     "pyarrow": ("https://arrow.apache.org/docs/", None),
-    "cudf": ("https://docs.nvidia.com/cudf/stable/", None),
+    "cudf": (f"https://docs.nvidia.com/cudf/{version}/", None),
     "dask": ("https://docs.dask.org/en/stable/", None),
     "pandas": ("https://pandas.pydata.org/docs/", None),
-    "dask-cuda": ("https://docs.nvidia.com/dask-cuda/stable/", None),
+    "dask-cuda": (f"https://docs.nvidia.com/dask-cuda/{version}/", None),
 }
 
 numpydoc_show_inherited_class_members = True
