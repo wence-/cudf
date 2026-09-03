@@ -1284,8 +1284,10 @@ class ConfigOptions(Generic[ExecutorType]):
                     env_join_filter_pushdown = os.environ.get(
                         "CUDF_POLARS__EXECUTOR__JOIN_FILTER_PUSHDOWN", "0"
                     )
-                    if not _bool_converter(env_join_filter_pushdown):
-                        user_executor_options["join_filter_pushdown"] = None
+                    if _bool_converter(env_join_filter_pushdown):
+                        user_executor_options["join_filter_pushdown"] = (
+                            JoinFilterPushdownOptions()
+                        )
 
                 executor = StreamingExecutor(**user_executor_options)
             case _:  # pragma: no cover; Unreachable
