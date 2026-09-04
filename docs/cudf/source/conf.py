@@ -179,7 +179,7 @@ templates_path = ["_templates"]
 # You can specify multiple suffix as a list of string:
 #
 # source_suffix = ['.rst', '.md']
-source_suffix = {".rst": "restructuredtext"}
+source_suffix = {".rst": "restructuredtext", ".md": "myst-nb"}
 
 # The master toctree document.
 master_doc = "index"
@@ -495,7 +495,7 @@ _intersphinx_cache = {}
 _intersphinx_extra_prefixes = ("rmm", "rmm::mr", "mr")
 
 _external_intersphinx_aliases = {
-    # "pandas": "pd",
+    "pandas": "pd",
     "pyarrow": "pa",
     "numpy": "np",
     "cupy": "cp",
@@ -669,6 +669,12 @@ def on_missing_reference(app, env, node, contnode):
 nitpick_ignore = [
     ("py:class", "Dtype"),
     ("py:class", "pandas.core.indexes.frozen.FrozenList"),
+    # pandas does not publish these implementation types in its inventory.
+    ("py:class", "pandas.api.typing.FrozenList"),
+    (
+        "py:class",
+        "pandas.core.arrays.arrow.extension_types.ArrowIntervalType",
+    ),
     ("py:class", "ScalarLike"),
     ("py:class", "StringColumn"),
     ("py:class", "ColumnLike"),
@@ -867,18 +873,6 @@ def register_sections_as_label(app: Sphinx, document: Node) -> None:
         domain.labels[name] = docname, labelid, title
 
 
-def relocate_libcudf_developer_guide_images(
-    app: Sphinx, document: Node
-) -> None:
-    """Use source-controlled image copies when rendering Doxygen page XML."""
-    if not app.env.docname.startswith("libcudf/developer_guide/"):
-        return
-
-    for image in document.findall(nodes.image):
-        if image["uri"].endswith("cpp/doxygen/xml/strings.png"):
-            image["uri"] = "strings.png"
-
-
 def use_slugged_duplicate_ids(app):
     # Use default docutils deduplication scheme for duplicate node ids.
     app.env.settings["auto_id_prefix"] = "%"
@@ -888,9 +882,6 @@ def setup(app):
     app.connect("builder-inited", use_slugged_duplicate_ids)
     app.connect("doctree-read", resolve_aliases)
     app.connect("doctree-read", register_sections_as_label)
-    app.connect(
-        "doctree-read", relocate_libcudf_developer_guide_images, priority=100
-    )
     app.connect("missing-reference", on_missing_reference)
     app.setup_extension("sphinx.ext.autodoc")
     app.add_autodocumenter(PLCIntEnumDocumenter)
