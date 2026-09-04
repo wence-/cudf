@@ -327,21 +327,33 @@ texinfo_documents = [
     )
 ]
 
+with open("../../../RAPIDS_BRANCH", "r") as f:
+    branch = f.read().strip()
+intersphinx_version = "latest" if branch == "main" else version
 
 intersphinx_mapping = {
     "cupy": ("https://docs.cupy.dev/en/stable/", None),
-    "dask-cuda": (f"https://docs.nvidia.com/dask-cuda/{version}/", None),
-    "dask-cudf": (f"https://docs.nvidia.com/dask-cudf/{version}/", None),
+    "dask-cuda": (
+        f"https://docs.nvidia.com/dask-cuda/{intersphinx_version}/",
+        None,
+    ),
+    "dask-cudf": (
+        f"https://docs.nvidia.com/dask-cudf/{intersphinx_version}/",
+        None,
+    ),
     "dlpack": ("https://dmlc.github.io/dlpack/latest/", None),
-    "kvikio": (f"https://docs.nvidia.com/kvikio/{version}/", None),
+    "kvikio": (f"https://docs.nvidia.com/kvikio/{intersphinx_version}/", None),
     "nanoarrow": ("https://arrow.apache.org/nanoarrow/latest/", None),
     "numpy": ("https://numpy.org/doc/stable/", None),
     "pandas": ("https://pandas.pydata.org/pandas-docs/stable/", None),
     "polars": ("https://docs.pola.rs/api/python/stable/", None),
     "pyarrow": ("https://arrow.apache.org/docs/", None),
     "python": ("https://docs.python.org/3/", None),
-    "rmm": (f"https://docs.nvidia.com/rmm/{version}/", None),
-    "rapidsmpf": (f"https://docs.nvidia.com/rapidsmpf/{version}/", None),
+    "rmm": (f"https://docs.nvidia.com/rmm/{intersphinx_version}/", None),
+    "rapidsmpf": (
+        f"https://docs.nvidia.com/rapidsmpf/{intersphinx_version}/",
+        None,
+    ),
     "typing_extensions": (
         "https://typing-extensions.readthedocs.io/en/stable/",
         None,
