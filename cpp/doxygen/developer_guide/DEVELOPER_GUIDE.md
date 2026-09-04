@@ -151,7 +151,7 @@ recommend watching Sean Parent's [C++ Seasoning talk](https://www.youtube.com/wa
 and we try to follow his rules: "No raw loops. No raw pointers. No raw synchronization primitives."
 
  * Prefer algorithms from STL and Thrust to raw loops.
- * Prefer libcudf and RMM [owning data structures and views](#libcudf-data-structures) to raw
+ * Prefer libcudf and RMM @ref libcudf-data-structures "owning data structures and views" to raw
    pointers and raw memory allocation.
  * libcudf doesn't have a lot of CPU-thread concurrency, but there is some. And currently libcudf
    does use raw synchronization primitives. So we should revisit Parent's third rule and improve
@@ -220,7 +220,7 @@ The following guidelines apply to organizing `#include` lines.
    yourself doing this, start a discussion about moving (parts of) the included internal header
    to a public header.
 
-# libcudf Data Structures
+# libcudf Data Structures {#libcudf-data-structures}
 
 Application data in libcudf is contained in Columns and Tables, but there are a variety of other
 data structures you will use when developing libcudf code.
@@ -246,7 +246,7 @@ libcudf allocates all device memory via RMM memory resources (MR) or CUDA MRs. E
 can be passed to libcudf functions via `rmm::device_async_resource_ref` parameters. See the
 [RMM documentation](https://github.com/rapidsai/rmm/blob/main/README.md) for details.
 
-### Current Device Memory Resource
+### Current Device Memory Resource {#rmmdevice_memory_resource}
 
 RMM provides a "default" memory resource for each device and functions to access and set it. libcudf
 provides wrappers for these functions in `cpp/include/cudf/utilities/memory_resource.hpp`.
@@ -347,7 +347,7 @@ An *immutable*, non-owning view of a table.
 
 A *mutable*, non-owning view of a table.
 
-## cudf::size_type
+## cudf::size_type {#cudfsize_type}
 
 The `cudf::size_type` is the type used for the number of elements in a column, indices to address
 specific elements, segments for subsets of column elements, etc. It is equivalent to a signed,
@@ -486,7 +486,7 @@ examples.
 
 **Things that libcudf should not validate**:
 - Integer overflow
-- Ensuring that outputs will not exceed the [`size_type`](#cudfsize_type) row count limit for a
+- Ensuring that outputs will not exceed the @ref cudfsize_type "size_type" row count limit for a
   given set of inputs
 
 This policy describes libcudf's default behavior. Some APIs offer opt-in overflow-aware variants for
@@ -551,7 +551,7 @@ inputs. The types of those exceptions (e.g. `cudf::logic_error`) are part of the
 However, the explanatory string returned by the `what` method of those exceptions is not part of the
 API and is subject to change. Calling code should not rely on the contents of libcudf error
 messages to determine the nature of the error. For information on the types of exceptions that
-libcudf throws under different circumstances, see the [section on error handling](#errors).
+libcudf throws under different circumstances, see the @ref errors "section on error handling".
 
 # libcudf API and Implementation
 
@@ -565,8 +565,8 @@ that allocate device memory or execute a kernel should accept an
 also accepts a memory resource parameter, the stream parameter should be placed
 just *before* the memory resource. This API should then forward the call to a
 corresponding `detail` API with an identical signature, except that the
-`detail` API should not have a default parameter for the stream ([detail APIs
-should always avoid default parameters](#default-parameters)). The
+`detail` API should not have a default parameter for the stream (@ref default-parameters
+"detail APIs should always avoid default parameters"). The
 implementation should be wholly contained in the `detail` API definition and
 use only asynchronous versions of CUDA APIs with the stream parameter.
 
@@ -635,7 +635,7 @@ where synchronization overhead is proportionally larger. Benchmarks have shown s
 for many operations on small inputs.
 
 This policy aligns with libcudf's existing stream semantics: libcudf APIs called on the host
-[do not guarantee that the stream is synchronized before returning](#async-apis).
+@ref async-apis "do not guarantee that the stream is synchronized before returning".
 Callers must explicitly synchronize if they need to access results on the host.
 
 Notes on `nosync`:
@@ -674,7 +674,7 @@ cudf::detail::copy_if(
 
 ## Memory Allocation
 
-Device [memory resources](#rmmdevice_memory_resource) are used in libcudf to abstract and control
+Device @ref rmmdevice_memory_resource "memory resources" are used in libcudf to abstract and control
 how device memory is allocated.
 
 ### Output Memory
@@ -878,7 +878,7 @@ pinned host memory may be device-accessible despite residing on the host. `cudaM
 CUDA to infer the valid copy direction from the pointers rather than rejecting such copies based on
 an explicit policy.
 
-## Default Parameters
+## Default Parameters {#default-parameters}
 
 While public libcudf APIs are free to include default function parameters, detail functions should
 not. Default memory resource parameters make it easy for developers to accidentally allocate memory
@@ -1037,7 +1037,7 @@ This iterator replaces the null/validity value for each element with a specified
 This iterator returns the validity of the underlying element (`true` or `false`). Created using
 `cudf::detail::make_validity_iterator`.
 
-### Index-normalizing iterators
+### Index-normalizing iterators {#index-normalizing-iterators}
 
 The proliferation of data types supported by libcudf can result in long compile times. One area
 where compile time was a problem is in types used to store indices, which can be any integer type.
@@ -1045,7 +1045,7 @@ The "indexalator", or index-normalizing iterator (`include/cudf/detail/indexalat
 used for index types (integers) without requiring a type-specific instance. It can be used for any
 iterator interface for reading an array of integer values of type `int8`, `int16`, `int32`,
 `int64`, `uint8`, `uint16`, `uint32`, or `uint64`. Reading specific elements always returns a
-[`cudf::size_type`](#cudfsize_type) integer.
+@ref cudfsize_type "cudf::size_type" integer.
 
 Use the `indexalator_factory` to create an appropriate input iterator from a column_view. Example
 input iterator usage:
@@ -1069,12 +1069,12 @@ thrust::lower_bound(rmm::exec_policy_nosync(stream),
                     cuda::std::less<Element>());
 ```
 
-### Offset-normalizing iterators
+### Offset-normalizing iterators {#offset-normalizing-iterators}
 
-Like the [indexalator](#index-normalizing-iterators),
+Like the @ref index-normalizing-iterators "indexalator",
 the "offsetalator", or offset-normalizing iterator (`include/cudf/detail/offsetalator.cuh`), can be
 used for offset column types (`INT32` or `INT64` only) without requiring a type-specific instance.
-This is helpful when reading or building [strings columns](#strings-columns).
+This is helpful when reading or building @ref strings-columns "strings columns".
 The normalized type is `int64` which means an `input_offsetsalator` will return `int64` type values
 for both `INT32` and `INT64` offsets columns.
 Likewise, an `output_offselator` can accept `int64` type values to store into either an
@@ -1123,7 +1123,7 @@ namespace.
 
 The public function is expected to contain a call to `CUDF_FUNC_RANGE()` followed by a call to
 a `detail` function with same name and parameters as the public function.
-See the [Streams](#streams) section for an example of this pattern.
+See the @ref streams "Streams" section for an example of this pattern.
 
 ### Internal
 
@@ -1317,7 +1317,7 @@ gradual support for more data types to make this easier. Typically we start with
 types such as numeric types and timestamps/durations, adding support for nested types later.
 
 Enabling an algorithm differently for different types uses either template specialization or SFINAE,
-as discussed in [Specializing Type-Dispatched Code Paths](#specializing-type-dispatched-code-paths).
+as discussed in @ref specializing-type-dispatched-code-paths "Specializing Type-Dispatched Code Paths".
 
 ## Comparing Data Types
 
@@ -1388,7 +1388,7 @@ dispatched, so a second-level type dispatch results in quadratic growth in compi
 object code size. As a large library with many types and functions, we are constantly working to
 reduce compilation time and code size.
 
-## Specializing Type-Dispatched Code Paths
+## Specializing Type-Dispatched Code Paths {#specializing-type-dispatched-code-paths}
 
 It is often necessary to customize the dispatched `operator()` for different types. This can be
 done in several ways.
@@ -1466,7 +1466,7 @@ For list columns, the parent column's type is `LIST` and contains no data, but i
 the number of lists in the column, and its null mask represents the validity of each list element.
 The parent has two children.
 
-1. A non-nullable column of [`size_type`](#cudfsize_type) elements that indicates the offset to the
+1. A non-nullable column of @ref cudfsize_type "size_type" elements that indicates the offset to the
    beginning of each list in a dense column of elements.
 2. A column containing the actual data and optional null mask for all elements of all the lists
    packed together.
@@ -1507,7 +1507,7 @@ lists_column = { {{{1, 2}, {3, 4}}, NULL}, {{{10, 20}, {30, 40}}, {{50, 60, 70},
 
 This is related to [Arrow's "Variable-Size List" memory layout](https://arrow.apache.org/docs/format/Columnar.html?highlight=nested%20types#physical-memory-layout).
 
-## Strings columns
+## Strings columns {#strings-columns}
 
 Strings are represented as a column with a data device buffer and a child offsets column.
 The parent column's type is `STRING` and its data holds all the characters across all the strings packed together
@@ -1523,7 +1523,7 @@ The following image shows an example of this compound column representation of s
 ![strings](strings.png)
 
 The type of the offsets column is either `INT32` or `INT64` depending on the number of bytes in the data buffer.
-See [`cudf::strings_view`](#cudfstrings_column_view-and-cudfstring_view) for more information on processing individual string rows.
+See @ref cudfstrings_column_view-and-cudfstring_view "cudf::strings_view" for more information on processing individual string rows.
 
 ## Structs columns
 
@@ -1632,7 +1632,7 @@ with the corresponding strings from either `destination` or `scatter_values`.
 
 libcudf provides view types for nested column types as well as for the data elements within them.
 
-### cudf::strings_column_view and cudf::string_view
+### cudf::strings_column_view and cudf::string_view {#cudfstrings_column_view-and-cudfstring_view}
 
 A `cudf::strings_column_view` wraps a strings column and contains a parent
 `cudf::column_view` as a view of the strings column and an offsets `cudf::column_view`
@@ -1640,14 +1640,14 @@ which is a child of the parent.
 The parent view contains the offset, size, and validity mask for the strings column.
 The offsets view is non-nullable with `offset()==0` and its own size.
 Since the offset column type can be either `INT32` or `INT64` it is useful to use the
-offset normalizing iterators [offsetalator](#offset-normalizing-iterators) to access individual offset values.
+offset normalizing iterators @ref offset-normalizing-iterators "offsetalator" to access individual offset values.
 
 A `cudf::string_view` is a view of a single string and therefore
 is the data type of a `cudf::column` of type `STRING` just like `int32_t` is the
 data type for a `cudf::column` of type `INT32`. As its name implies, this is a
 read-only object instance that points to device memory inside the strings column.
 Its lifespan is the same (or less) as the column it views.
-An individual strings column row and a `cudf::string_view` is limited to [`size_type`](#cudfsize_type) bytes.
+An individual strings column row and a `cudf::string_view` is limited to @ref cudfsize_type "size_type" bytes.
 
 Use the `column_device_view::element` method to access an individual row element. Like any other
 column, do not call `element()` on a row that is null.
@@ -1667,13 +1667,14 @@ instance of a class object to represent a null string.
 
 The `cudf::string_view` contains comparison operators `<,>,==,<=,>=` that can be used in many cudf
 functions like `sort` without string-specific code. The data for a `cudf::string_view` instance is
-required to be [UTF-8](#utf-8) and all operators and methods expect this encoding. Unless documented
+required to be @ref utf-8 "UTF-8" and all operators and methods expect this encoding. Unless documented
 otherwise, position and length parameters are specified in characters and not bytes. The class also
 includes a `cudf::string_view::const_iterator` which can be used to navigate through individual characters
 within the string.
 
 `cudf::type_dispatcher` dispatches to the `cudf::string_view` data type when invoked on a `STRING` column.
 
+@anchor utf-8
 #### UTF-8
 
 The libcudf strings column only supports UTF-8 encoding for strings data.
@@ -1721,7 +1722,7 @@ formats commonly used in data analytics, including CSV, Parquet, ORC, Avro, and 
 
 Here are some tools that can help with debugging libcudf (besides printf of course):
 1. `cuda-gdb`\
-   Follow the instructions in the [Contributor to cuDF guide](../../../CONTRIBUTING.md#debugging-cudf) to build
+   Follow the instructions in the [Contributor to cuDF guide](https://github.com/rapidsai/cudf/blob/main/CONTRIBUTING.md#debugging-cudf) to build
    and run libcudf with debug symbols.
 2. `compute-sanitizer`\
    The [CUDA Compute Sanitizer](https://docs.nvidia.com/compute-sanitizer/ComputeSanitizer/index.html)
@@ -1731,7 +1732,7 @@ Here are some tools that can help with debugging libcudf (besides printf of cour
    The `racecheck` and `initcheck` have been known to produce false positives.
 3. `cudf::test::print()`\
    The `print()` utility can be called within a gtest to output the data in a `cudf::column_view`.
-   More information is available in the [Testing Guide](TESTING.md#printing-and-accessing-column-data)
+   More information is available in the @ref md_doxygen_developer_guide_TESTING "Testing Guide"
 4. GCC Address Sanitizer\
    The GCC ASAN can also be used by adding the `-fsanitize=address` compiler flag.
    There is a compatibility issue with the CUDA runtime that can be worked around by setting

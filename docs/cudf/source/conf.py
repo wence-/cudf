@@ -470,6 +470,8 @@ _names_to_skip_in_cpp = {
     "type_to_scalar_type_impl",
     "type_to_scalar_type_impl",
     "detail",
+    # Test-only helper types are intentionally not published as API pages.
+    "classcudf_1_1test_1_1",
     # kafka objects
     "python_callable_type",
     "kafka_oauth_callback_wrapper_type",
@@ -865,6 +867,18 @@ def register_sections_as_label(app: Sphinx, document: Node) -> None:
         domain.labels[name] = docname, labelid, title
 
 
+def relocate_libcudf_developer_guide_images(
+    app: Sphinx, document: Node
+) -> None:
+    """Use source-controlled image copies when rendering Doxygen page XML."""
+    if not app.env.docname.startswith("libcudf/developer_guide/"):
+        return
+
+    for image in document.findall(nodes.image):
+        if image["uri"].endswith("cpp/doxygen/xml/strings.png"):
+            image["uri"] = "strings.png"
+
+
 def use_slugged_duplicate_ids(app):
     # Use default docutils deduplication scheme for duplicate node ids.
     app.env.settings["auto_id_prefix"] = "%"
@@ -874,6 +888,9 @@ def setup(app):
     app.connect("builder-inited", use_slugged_duplicate_ids)
     app.connect("doctree-read", resolve_aliases)
     app.connect("doctree-read", register_sections_as_label)
+    app.connect(
+        "doctree-read", relocate_libcudf_developer_guide_images, priority=100
+    )
     app.connect("missing-reference", on_missing_reference)
     app.setup_extension("sphinx.ext.autodoc")
     app.add_autodocumenter(PLCIntEnumDocumenter)

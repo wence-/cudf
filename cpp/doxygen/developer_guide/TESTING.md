@@ -453,6 +453,7 @@ Verifies the bitwise equality of two device memory buffers.
 
 Column comparison functions in the `cudf::test::detail` namespace should **NOT** be used directly.
 
+\anchor printing-and-accessing-column-data
 ### Printing and accessing column data
 
 The `<cudf_test/debug_utilities.hpp>` header defines various functions and overloads for printing

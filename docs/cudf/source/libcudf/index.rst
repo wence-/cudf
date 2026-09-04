@@ -8,3 +8,4 @@ libcudf
    api_docs/index.rst
    md_regex
    unicode_limitations
+   developer_guide/DEVELOPER_GUIDE
