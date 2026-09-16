@@ -26,8 +26,8 @@ from cudf.core.udf.templates import (
 )
 from cudf.core.udf.udf_kernel_base import ApplyKernelBase
 from cudf.core.udf.utils import (
-    UDFError,
     UDF_SHIM_FILE,
+    UDFError,
     _all_dtypes_from_frame,
     _get_extensionty_size,
     _supported_cols_from_frame,

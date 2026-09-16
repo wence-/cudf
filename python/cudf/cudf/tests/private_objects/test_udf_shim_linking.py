@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 import cudf
@@ -27,12 +27,9 @@ def test_numeric_apply_kernels_do_not_link_shim():
         2,
         3,
     ]
-    assert (
-        dataframe_kernel.frame.apply(dataframe_func, axis=1)
-        .to_arrow()
-        .to_pylist()
-        == [4, 6]
-    )
+    assert dataframe_kernel.frame.apply(
+        dataframe_func, axis=1
+    ).to_arrow().to_pylist() == [4, 6]
 
 
 def test_string_apply_kernel_links_shim():
@@ -57,8 +54,6 @@ def test_groupby_apply_kernel_links_shim():
     def func(group):
         return group["value"].sum()
 
-    kernel = GroupByApplyKernel(
-        cudf.DataFrame({"value": [1, 2]}), func, ()
-    )
+    kernel = GroupByApplyKernel(cudf.DataFrame({"value": [1, 2]}), func, ())
 
     assert kernel._get_link_files(nrt=False) == [UDF_SHIM_FILE]
