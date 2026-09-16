@@ -717,7 +717,7 @@ jobs:
       sha: ${{ inputs.sha }}
       arch: amd64
       node_type: gpu-rtxpro6000-latest-1
-      container_image: rapidsai/citestwheel:26.12-cuda13.3.0-ubuntu26.04-py3.14
+      container_image: rapidsai/citestwheel:26.12-latest
       script: >-
         ci/test_cudf_polars_polars_tests.sh --engine ${{ matrix.engine }}
         --inject-gpu-engine-blocksize default
