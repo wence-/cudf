@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 import warnings
@@ -184,7 +184,9 @@ class ApplyKernelBase(ABC):
         """Return device libraries required by this generated kernel.
 
         ``shim.fatbin`` supplies the device functions used by string UDFs and
-        the managed-string NRT destructor. Linking it into numeric apply
+        the managed-string NRT destructor. Because generated UDF source is
+        opaque here, conservatively link it for every string input, even when
+        the UDF does not access that column. Linking it into numeric apply
         kernels adds device-link work without providing any symbols they use.
         """
         if nrt or self._has_string_input():
