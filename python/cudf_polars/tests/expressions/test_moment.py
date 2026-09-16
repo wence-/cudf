@@ -63,7 +63,10 @@ def test_moment_finalization_handles_underflowed_denominators(engine):
     # skew/kurtosis normalization power. Both results should be NaN rather
     # than raising ZeroDivisionError during GPU execution.
     df = pl.LazyFrame({"a": [2e-150, 4e-150]})
-    q = df.select(pl.col("a").skew(), pl.col("a").kurtosis())
+    q = df.select(
+        pl.col("a").skew().alias("skew"),
+        pl.col("a").kurtosis().alias("kurtosis"),
+    )
     assert_gpu_result_equal(q, engine=engine, check_exact=False)
 
 
