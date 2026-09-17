@@ -5,7 +5,7 @@ from cython.operator import dereference
 
 from libc.stddef cimport size_t
 from libcpp.memory cimport make_unique, unique_ptr
-from libcpp.optional cimport optional
+from libcpp.optional cimport optional, nullopt
 from libcpp.utility cimport move
 from pylibcudf.libcudf cimport join as cpp_join
 from pylibcudf.libcudf.column.column cimport column
@@ -23,6 +23,8 @@ from .expressions cimport Expression
 from .table cimport Table
 from .utils cimport _get_stream, _get_memory_resource
 from typing import TYPE_CHECKING
+
+from pylibcudf.libcudf.join import nullable_join as NullableJoin  # no-cython-lint, isort:skip
 
 if TYPE_CHECKING:
     from pylibcudf.typing import CudaStreamLike
@@ -1039,3 +1041,169 @@ cdef class FilteredJoin:
                 mr.get_mr()
             )
         return _column_from_gather_map(move(c_result), _stream, mr)
+
+
+cdef class HashJoin:
+    def __cinit__(
+        self,
+        Table right,
+        cpp_join.nullable_join has_nulls=cpp_join.nullable_join.YES,
+        null_equality compare_nulls=null_equality.EQUAL,
+        double load_factor=0.5,
+        object stream: CudaStreamLike | None = None,
+        DeviceMemoryResource mr=None,
+    ) -> None:
+        """
+        Construct a hash join object for subsequent probe calls.
+
+        For details, see :cpp:class:`cudf::hash_join`.
+
+        Parameters
+        ----------
+        right : Table
+            The right table used to build the hash table.
+        has_nulls : NullableJoin
+            Flag indicating if there are any nulls in either the left or
+            right tables used in the join.
+        compare_nulls : NullEquality
+            Controls whether null join-key values should match or not.
+        stream : Stream, optional
+            CUDA stream used for device memory operations and kernel launches.
+        mr : DeviceMemoryResource, optional
+            Memory resource used for allocations.
+        """
+        cdef Stream _stream = _get_stream(stream)
+        cdef cudaStream_t _cs = _stream.view().get()
+        cdef table_view c_right = right.view()
+        self.right = right  # keep table alive
+        mr = _get_memory_resource(mr)
+        with nogil:
+            self.c_obj.reset(
+                new cpp_join.hash_join(
+                    c_right,
+                    has_nulls,
+                    compare_nulls,
+                    load_factor,
+                    _cs,
+                    any_resource[device_accessible](mr.get_mr())
+                )
+            )
+
+    def __dealloc__(self):
+        with nogil:
+            self.c_obj.reset()
+        self.right = None
+
+    def inner_join(
+        self,
+        Table left,
+        object stream: CudaStreamLike | None = None,
+        DeviceMemoryResource mr=None,
+    ) -> tuple[Column, Column]:
+        """
+        Perform an inner join against the provided left table.
+
+        Parameters
+        ----------
+        left
+            left Table to participate in the join.
+        stream
+            Optional CUDA stream used for device memory operations and kernel launches.
+        mr
+            Optional memory resource for device allocations
+
+        Returns
+        -------
+        tuple[Column, Column]
+            A tuple containing the row indices from the left and right tables after the
+            join.
+        """
+        cdef cpp_join.gather_map_pair_type c_result
+        cdef Stream cstream = _get_stream(stream)
+        cdef table_view c_left = left.view()
+        cdef optional[size_t] c_size = nullopt
+        mr = _get_memory_resource(mr)
+        with nogil:
+            c_result = dereference(self.c_obj).inner_join(
+                c_left, c_size, cstream.view().get(), mr.get_mr()
+            )
+        return (
+            _column_from_gather_map(move(c_result.first), stream, mr),
+            _column_from_gather_map(move(c_result.second), stream, mr),
+        )
+
+    def left_join(
+        self,
+        Table left,
+        object stream: CudaStreamLike | None = None,
+        DeviceMemoryResource mr=None,
+    ) -> tuple[Column, Column]:
+        """
+        Perform a left join against the provided left table.
+
+        Parameters
+        ----------
+        left
+            left Table to participate in the join.
+        stream
+            Optional CUDA stream used for device memory operations and kernel launches.
+        mr
+            Optional memory resource for device allocations
+
+        Returns
+        -------
+        tuple[Column, Column]
+            A tuple containing the row indices from the left and right tables after the
+            join.
+        """
+        cdef cpp_join.gather_map_pair_type c_result
+        cdef Stream cstream = _get_stream(stream)
+        cdef table_view c_left = left.view()
+        cdef optional[size_t] c_size = nullopt
+        mr = _get_memory_resource(mr)
+        with nogil:
+            c_result = dereference(self.c_obj).left_join(
+                c_left, c_size, cstream.view().get(), mr.get_mr()
+            )
+        return (
+            _column_from_gather_map(move(c_result.first), stream, mr),
+            _column_from_gather_map(move(c_result.second), stream, mr),
+        )
+
+    def full_join(
+        self,
+        Table left,
+        object stream: CudaStreamLike | None = None,
+        DeviceMemoryResource mr=None,
+    ) -> tuple[Column, Column]:
+        """
+        Perform a full join against the provided left table.
+
+        Parameters
+        ----------
+        left
+            left Table to participate in the join.
+        stream
+            Optional CUDA stream used for device memory operations and kernel launches.
+        mr
+            Optional memory resource for device allocations
+
+        Returns
+        -------
+        tuple[Column, Column]
+            A tuple containing the row indices from the left and right tables after the
+            join.
+        """
+        cdef cpp_join.gather_map_pair_type c_result
+        cdef Stream cstream = _get_stream(stream)
+        cdef table_view c_left = left.view()
+        cdef optional[size_t] c_size = nullopt
+        mr = _get_memory_resource(mr)
+        with nogil:
+            c_result = dereference(self.c_obj).full_join(
+                c_left, c_size, cstream.view().get(), mr.get_mr()
+            )
+        return (
+            _column_from_gather_map(move(c_result.first), stream, mr),
+            _column_from_gather_map(move(c_result.second), stream, mr),
+        )

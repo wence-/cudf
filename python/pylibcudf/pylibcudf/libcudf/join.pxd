@@ -80,6 +80,45 @@ cdef extern from "cudf/join/join.hpp" namespace "cudf" nogil:
         device_async_resource_ref mr
     ) except +libcudf_exception_handler
 
+    cpdef enum class nullable_join(bool):
+        NO
+        YES
+
+cdef extern from "cudf/join/hash_join.hpp" namespace "cudf" nogil:
+    cdef cppclass hash_join:
+        hash_join(
+            const table_view& right,
+            null_equality compare_nulls,
+            cudaStream_t stream,
+            any_resource[device_accessible] mr,
+        ) except +libcudf_exception_handler
+        hash_join(
+            const table_view& right,
+            nullable_join has_nulls,
+            null_equality compare_nulls,
+            double load_factor,
+            cudaStream_t stream,
+            any_resource[device_accessible] mr,
+        ) except +libcudf_exception_handler
+        gather_map_pair_type inner_join(
+            const table_view&,
+            optional[size_t],
+            cudaStream_t stream,
+            device_async_resource_ref mr
+        )
+        gather_map_pair_type left_join(
+            const table_view&,
+            optional[size_t],
+            cudaStream_t stream,
+            device_async_resource_ref mr
+        )
+        gather_map_pair_type full_join(
+            const table_view&,
+            optional[size_t],
+            cudaStream_t stream,
+            device_async_resource_ref mr
+        )
+
 cdef extern from "cudf/join/conditional_join.hpp" namespace "cudf" nogil:
     cdef gather_map_pair_type conditional_inner_join(
         const table_view left,
