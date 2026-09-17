@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2020-2026, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2020-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 from libc.stddef cimport size_t
@@ -17,6 +17,7 @@ from cuda.bindings.cyruntime cimport cudaStream_t
 from rmm.librmm.memory_resource cimport device_async_resource_ref
 
 from rmm.librmm.device_uvector cimport device_uvector
+from rmm.librmm.memory_resource cimport any_resource, device_accessible
 from pylibcudf.libcudf.utilities.span cimport device_span
 
 ctypedef unique_ptr[device_uvector[size_type]] gather_map_type
@@ -217,17 +218,18 @@ cdef extern from "cudf/join/mixed_join.hpp" namespace "cudf" nogil:
 
 cdef extern from "cudf/join/filtered_join.hpp" namespace "cudf" nogil:
     cdef cppclass filtered_join:
-        filtered_join() except +
-        filtered_join(
-            const table_view right,
-            null_equality compare_nulls,
-            cudaStream_t stream
-        ) except +libcudf_exception_handler
         filtered_join(
             const table_view right,
             null_equality compare_nulls,
             double load_factor,
-            cudaStream_t stream
+            cudaStream_t stream,
+            any_resource[device_accessible] mr,
+        ) except +libcudf_exception_handler
+        filtered_join(
+            const table_view right,
+            null_equality compare_nulls,
+            cudaStream_t stream,
+            any_resource[device_accessible] mr,
         ) except +libcudf_exception_handler
         gather_map_type semi_join(
             const table_view left,

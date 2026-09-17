@@ -14,6 +14,7 @@ from pylibcudf.libcudf.table.table_view cimport table_view
 from pylibcudf.libcudf.types cimport null_equality
 
 from rmm.librmm.device_buffer cimport device_buffer
+from rmm.librmm.memory_resource cimport any_resource, device_accessible
 from rmm.pylibrmm.stream cimport Stream
 from rmm.pylibrmm.memory_resource cimport DeviceMemoryResource
 
@@ -248,7 +249,8 @@ cpdef Column left_semi_join(
             new cpp_join.filtered_join(
                 c_right_keys,
                 nulls_equal,
-                _cs
+                _cs,
+                any_resource[device_accessible](mr.get_mr()),
             )
         )
         c_result = join_obj.get()[0].semi_join(
@@ -299,7 +301,8 @@ cpdef Column left_anti_join(
             new cpp_join.filtered_join(
                 c_right_keys,
                 nulls_equal,
-                _cs
+                _cs,
+                any_resource[device_accessible](mr.get_mr()),
             )
         )
         c_result = join_obj.get()[0].anti_join(
@@ -915,6 +918,7 @@ cdef class FilteredJoin:
         null_equality compare_nulls=null_equality.EQUAL,
         double load_factor=0.5,
         object stream: CudaStreamLike | None = None,
+        DeviceMemoryResource mr=None,
     ) -> None:
         """
         Construct a filtered hash join object for subsequent probe calls.
@@ -930,20 +934,29 @@ cdef class FilteredJoin:
             must be in range (0,1]. Defaults to 0.5.
         stream : Stream, optional
             CUDA stream used for device memory operations and kernel launches.
+        mr : DeviceMemoryResource, optional
+            Device memory resource used for allocations
         """
         cdef Stream _stream = _get_stream(stream)
         cdef cudaStream_t _cs = _stream.view().get()
-
         cdef table_view c_right = right.view()
+        mr = _get_memory_resource(mr)
+        self.right = right  # keep filter table alive
         with nogil:
             self.c_obj.reset(
                 new cpp_join.filtered_join(
                     c_right,
                     compare_nulls,
                     load_factor,
-                    _cs
+                    _cs,
+                    any_resource[device_accessible](mr.get_mr()),
                 )
             )
+
+    def __dealloc__(self):
+        with nogil:
+            self.c_obj.reset()
+        self.right = None
 
     def semi_join(
         self,

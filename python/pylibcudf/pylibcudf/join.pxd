@@ -152,3 +152,4 @@ cpdef Column mixed_left_anti_join(
 
 cdef class FilteredJoin:
     cdef unique_ptr[cpp_join.filtered_join] c_obj
+    cdef Table right
