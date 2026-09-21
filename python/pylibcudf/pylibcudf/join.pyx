@@ -1128,8 +1128,8 @@ cdef class HashJoin:
                 c_left, c_size, cstream.view().get(), mr.get_mr()
             )
         return (
-            _column_from_gather_map(move(c_result.first), stream, mr),
-            _column_from_gather_map(move(c_result.second), stream, mr),
+            _column_from_gather_map(move(c_result.first), cstream, mr),
+            _column_from_gather_map(move(c_result.second), cstream, mr),
         )
 
     def left_join(
@@ -1166,8 +1166,8 @@ cdef class HashJoin:
                 c_left, c_size, cstream.view().get(), mr.get_mr()
             )
         return (
-            _column_from_gather_map(move(c_result.first), stream, mr),
-            _column_from_gather_map(move(c_result.second), stream, mr),
+            _column_from_gather_map(move(c_result.first), cstream, mr),
+            _column_from_gather_map(move(c_result.second), cstream, mr),
         )
 
     def full_join(
@@ -1204,6 +1204,6 @@ cdef class HashJoin:
                 c_left, c_size, cstream.view().get(), mr.get_mr()
             )
         return (
-            _column_from_gather_map(move(c_result.first), stream, mr),
-            _column_from_gather_map(move(c_result.second), stream, mr),
+            _column_from_gather_map(move(c_result.first), cstream, mr),
+            _column_from_gather_map(move(c_result.second), cstream, mr),
         )
