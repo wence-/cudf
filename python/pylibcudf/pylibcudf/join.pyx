@@ -40,6 +40,7 @@ __all__ = [
     "cross_join",
     "FilteredJoin",
     "full_join",
+    "HashJoin",
     "inner_join",
     "left_anti_join",
     "left_join",
@@ -49,6 +50,7 @@ __all__ = [
     "mixed_left_anti_join",
     "mixed_left_join",
     "mixed_left_semi_join",
+    "NullableJoin",
 ]
 
 cdef Column _column_from_gather_map(
