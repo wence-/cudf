@@ -47,9 +47,9 @@ If a required codebase, toolchain, compatible cuDF runtime, GPU, or reference re
 
 ## POC acceptance criteria and handoff
 
-POC passes when the source change builds, the program exits successfully, and its output matches the named CPU or reference result under the stated comparison policy.
+POC passes only when the source change builds, the program exits successfully, its output matches the named CPU or reference result under the stated comparison policy, and a reliable engine signal or runtime observation confirms that the requested result-producing work ran through cuDF.
 
-Report any available engine signal or lightweight runtime observation that shows the intended work ran through cuDF. If reliable confirmation is unavailable, mark it unresolved. Do not infer native execution from GPU availability or elapsed time.
+Report the native-execution evidence separately from numerical agreement. If reliable confirmation is unavailable, mark native execution unresolved and do not report an overall POC pass. Do not infer native execution from GPU availability or elapsed time. A profiler is not required when another reliable engine signal or runtime observation establishes native cuDF execution.
 
 Return:
 
