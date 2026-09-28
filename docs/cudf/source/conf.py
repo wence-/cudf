@@ -587,6 +587,7 @@ _names_to_skip_in_cpp = {
     # kafka objects
     "python_callable_type",
     "kafka_oauth_callback_wrapper_type",
+    "jit_compilation_error",
     # Template types
     "Radix",
     # Unsupported by Breathe
