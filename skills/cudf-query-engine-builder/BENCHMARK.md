@@ -1,68 +1,121 @@
-# Evaluation report
+# Skill Benchmark: cudf-query-engine-builder
 
-On September 28, 2026, the skill was evaluated on four tasks with and without the skill in Claude Code and Codex. A cleanup failure in the original Claude trials led to an explicit exception-cleanup requirement in the main workflow. Fresh targeted trials of the revised skill passed the independent worker-handoff checks in both harnesses. The original comparison and subsequent regression checks are reported separately below.
+> **Overall verdict: NEUTRAL — One or more dimensions remain below PASS**
 
-## Original task results
+Live evaluation did not show a material gain or regression. Collect more evidence or improve the skill before making a publication decision.
 
-One fresh agent trial was run per task, harness and condition, for 16 trials. The native tasks used synthetic C++ starters and an independent checker maintained outside this distribution. The checker preserved the supplied caller and CPU implementation. The native test suite is not included, so these GPU results cannot be reproduced from this package alone.
+## Evaluation Metadata
 
-| Task | Claude without skill | Claude with skill | Codex without skill | Codex with skill |
-| --- | --- | --- | --- | --- |
-| Native filter, multiplication and aggregation | Pass | Pass | Pass | Pass |
-| Native worker handoff, including allocation-failure cleanup | Fail | Fail | Pass | Pass |
-| Ask for missing engine inputs without inventing a build result | Pass | Pass | Pass | Pass |
-| Return pandas expression retaining missing group keys | Pass | Pass | Pass | Pass |
+- Skill: `cudf-query-engine-builder`
+- Evaluation date: 2026-09-29
+- Evaluator version: `1.5.6`
+- Agents: Claude Code (`aws/anthropic/bedrock-claude-opus-4-8`), Codex (`openai/openai/gpt-5.5`)
+- Tasks: 2 evaluation tasks (1 positive, 1 negative)
+- Dataset digest: `sha256:907610a19e3fae54e7613006484b6322ea094d9a7ede260c3c5e35112e91848c` (skill-evaluator-dataset-snapshot/1)
+- Attempts per task: 3
+- Environment: `k8s-sandbox`
+- Tier 2 evidence: required for publication
+- Tier 3 evidence: required for publication
 
-For worker handoff, the second output allocation was made after a device-to-host copy had been queued. Both Claude implementations released the first pinned output buffer during exception unwinding before its copy completed. The independent observer reported early_release=1. Both agents had reported successful tests, so the independent result overrides their final summaries. The observer waited before actually freeing the buffer, preventing the test from turning the detected lifetime violation into a use-after-free.
+Each task attempt ran in its own isolated sandbox pod.
 
-Codex passed the normal, empty, boundary, delayed-upload, allocation-failure and subsequent-call checks in both conditions. Filter/aggregate comparisons use exact sum and count equality. Worker comparisons use exact ordered values and doubles, plus ownership/event observations. These checks establish the observed cases only; they are not a proof of every exception path.
+## What This Report Answers
 
-## Cleanup correction and regression checks
+The three-tier evaluation checks whether the skill:
 
-The main workflow now requires inspecting operations that can throw after GPU submission, preserving owners through cleanup, testing a recoverable allocation failure while work is pending, and checking a later valid call when the engine promises recovery. A failed ownership or readiness check is a failed POC even if normal output values match.
+- is safe to use;
+- produces correct answers;
+- is discovered and activated when needed;
+- helps the agent complete the user's goal and expected workflow; and
+- avoids wasted skill and tool usage.
 
-The worker-handoff task was then rerun from the original starter with the revised skill, once in each harness. Neither trial saw the earlier generated implementation or its failure report. Both generated implementations allocated both host output buffers before submitting either device-to-host copy, removing the observed second-allocation failure window. The independent checker passed normal results, empty and boundary inputs, delayed upload, both allocation failures and subsequent valid calls. Nonempty CUDA traces and source inspection confirmed result-producing libcudf work.
+## Results at a Glance
 
-| Revised-skill trial | Independent checks | Input tokens including cache | Output tokens | Elapsed seconds |
-| --- | --- | ---: | ---: | ---: |
-| Claude Code / claude-sonnet-5 | Pass | 238,004 | 21,121 | 225.7 |
-| Codex / gpt-5.5, medium reasoning | Pass | 519,397 | 6,603 | 165.1 |
+| Measure | Claude Code (Baseline → Skill Uplift) | Codex (Baseline → Skill Uplift) |
+|---|---:|---:|
+| Overall | 99.8% — baseline ran, but no comparable score was available; uplift unavailable | 98.8% — baseline ran, but no comparable score was available; uplift unavailable |
+| Security | 100.0% → 100.0% (±0.0 points) | 100.0% → 100.0% (±0.0 points) |
+| Correctness | 100.0% → 100.0% (±0.0 points) | 100.0% → 100.0% (±0.0 points) |
+| Discoverability | 100.0% — baseline ran, but no comparable score was available; uplift unavailable | 95.0% — baseline ran, but no comparable score was available; uplift unavailable |
+| Effectiveness | 100.0% → 100.0% (±0.0 points) | 100.0% → 100.0% (±0.0 points) |
+| Efficiency | 99.2% — baseline ran, but no comparable score was available; uplift unavailable | 98.9% — baseline ran, but no comparable score was available; uplift unavailable |
 
-These two regression trials do not replace the original failures and are not a new paired comparison against the baseline. Other runtime failures, including lost-device recovery and every possible throwing library call, remain outside the measured coverage.
+**How to read this table:** baseline is the same task attempted without the target skill. Scores are rounded to one decimal; threshold-adjacent values use additional precision so their displayed band matches the verdict. Uplift is derived from those displayed scores and shown in percentage points.
 
-## Skill selection
+Example: `47.0% → 92.0% (+45.0 points)` means the skill-assisted run scored 92.0%, 45.0 percentage points above its 47.0% no-skill baseline.
 
-Both harnesses read SKILL.md and its asynchronous-cleanup reference for both native tasks in the with-skill condition. Neither loaded the skill for the pandas-only negative prompt. For the missing-input prompt, Codex read the skill; Claude asked appropriate prerequisite questions without reading it. Claude therefore met the behavioral expectation but not the dataset's expected skill activation for that prompt.
+A partial dimension was calculated from only the available configured signals; review the detailed report before relying on it.
 
-The harness exposed the skill name, description and readable file path only in the with-skill condition. Claude ran with customizations disabled to isolate that choice; Codex used isolated runtime state. These are controlled selection observations, not a test of discovery after installing from the public catalog.
+## Token Usage
 
-## Token use and elapsed time
+Actual Tier 3 execution usage is reported for every observed agent/case pair and both conditions.
 
-The table totals all four trials in each condition. Input totals include cached input. Output totals are the harness-reported output counts. The harnesses report usage differently, so compare conditions within a harness, not token totals across models.
+| Agent | Dataset case | With skill | Without skill | Delta | Change | Coverage |
+|---|---|---:|---:|---:|---:|---|
+| claude-code | All cases | 92,424 | 250,745 | -158,321 | -63.14% | skill 2/2; base 2/2 |
+| claude-code | dataframe-negative | 29,461 | 29,229 | +232 | +0.79% | skill 1/1; base 1/1 |
+| claude-code | missing-engine-input | 62,963 | 221,516 | -158,553 | -71.58% | skill 1/1; base 1/1 |
+| codex | All cases | 73,697 | 82,748 | -9,051 | -10.94% | skill 2/2; base 2/2 |
+| codex | dataframe-negative | 13,506 | 13,243 | +263 | +1.99% | skill 1/1; base 1/1 |
+| codex | missing-engine-input | 60,191 | 69,505 | -9,314 | -13.40% | skill 1/1; base 1/1 |
+| ALL AGENTS | Dataset aggregate | 166,121 | 333,493 | -167,372 | -50.19% | skill 4/4; base 4/4 |
 
-| Harness and model | Condition | Input tokens including cache | Output tokens | Total elapsed seconds |
-| --- | --- | ---: | ---: | ---: |
-| Claude Code 2.1.280 / claude-sonnet-5 | without | 583,799 | 24,194 | 674.7 |
-| Claude Code 2.1.280 / claude-sonnet-5 | with | 469,027 | 30,743 | 323.2 |
-| Codex CLI 0.155.1 / gpt-5.5, medium reasoning | without | 1,197,025 | 11,611 | 324.4 |
-| Codex CLI 0.155.1 / gpt-5.5, medium reasoning | with | 1,251,820 | 11,759 | 314.7 |
+Prompt tokens include cached reads, so total tokens are `prompt + completion` (cached is not added twice). The Efficiency score uses `(prompt - cached) + completion`. N/A means the relevant trajectory counters were not available; coverage is never estimated.
 
-Claude ran on Windows and used a restricted helper to build and execute on the Linux GPU host. Codex ran inside the Linux container. GPU work was serialized; Claude elapsed time includes waiting for other tests. These times are not comparable query-speed measurements or evidence of generation-speed improvement.
+## Tier Status
 
-## Environment and method
+| Tier | Purpose | Status | Evidence |
+|---|---|---|---|
+| Tier 1 | Static validation | **PASSED WITH OBSERVATIONS** | 11 validator(s); 14 finding(s) |
+| Tier 2 | Semantic deduplication | **PASSED** | 2 validator(s); 0 finding(s) |
+| Tier 3 | Live agent evaluation | **NEUTRAL** | 2 agent(s); 2 task(s) |
 
-Native builds used one NVIDIA L40S, CUDA toolkit 12.9.86, libcudf 26.08.01, RMM 26.08.0, GCC 13.3.0 and a C++20 build. Each container was limited to four CPUs and 16 GiB memory. Native tasks permitted up to four build attempts within a single trial. Setup failures before usable evaluation were excluded from the reported trials.
+## Findings and Observations
 
-After generation, an independent checker rebuilt the saved programs and ran the synthetic fixtures, allocation failures and same-process recovery checks. CUDA kernel traces were collected separately for nonempty runs. Trace review and source review must establish result-producing libcudf work; numerical agreement alone does not establish GPU execution.
+<details>
+<summary>Show detailed findings and successful checks</summary>
 
-## CI and GPU evaluation split
+- **MEDIUM** QUALITY/quality_correctness: SKILL_SPEC recommended field missing: 'metadata.tags' (`skills/cudf-query-engine-builder/SKILL.md`)
+- **MEDIUM** SCHEMA/body_recommended_section: Missing recommended section: '## Instructions' (`skills/cudf-query-engine-builder/SKILL.md`)
+- **MEDIUM** SCHEMA/body_recommended_section: Missing recommended section: '## Examples' (`skills/cudf-query-engine-builder/SKILL.md`)
+- **LOW** QUALITY/quality_correctness: No examples provided (`skills/cudf-query-engine-builder/SKILL.md`)
+- **LOW** QUALITY/quality_discoverability: Description very long (561 chars, recommend 50-150) (`skills/cudf-query-engine-builder/SKILL.md`)
+- 9 additional finding(s) are available in the full evaluation artifacts.
 
-evals/evals.json contains the distributed CPU-only checks for missing prerequisites and a pandas-only negative request. The native GPU suite and comparison checker are maintained separately and are not distributed here. The configuration does not provision a GPU. Passing the distributed checks does not establish native GPU correctness. See evals/EVAL.md for the available evaluation procedure.
+</details>
 
-## Evaluated revision and limits
+## Scoring Methodology
 
-Evaluated SKILL.md SHA256: 422fc5e85e25fb20e494ee2903820f33910509d866334785e918a265c5ca68b9.
+<details>
+<summary>Show dimension definitions, source signals, and thresholds</summary>
 
-The revised skill used for the cleanup regression has SKILL.md SHA256 0ab905f2a5274f78a3da999541a0f6e32ef1748cb56d2f19740f6e40cbe4cf35. It adds the exception-cleanup requirement. The full four-task comparison belongs to the original revision; the targeted regression belongs to this revised file.
+| Dimension | Question | Scored signals |
+|---|---|---|
+| Security | Is it safe to use? | `security` (100%) |
+| Correctness | Is the answer correct? | `accuracy` (100%) |
+| Discoverability | Was the right skill loaded when needed? | `skill_execution` (100%) |
+| Effectiveness | Did the skill help complete the task? | `goal_accuracy` (50%) + `behavior_check` (50%) |
+| Efficiency | Did it avoid wasted tool calls and token usage? | `skill_efficiency` (50%) + `token_efficiency` (50%) |
 
-This is one trial per task and condition on two native task families. It does not establish a general quality lift, a token saving, query speed, production readiness, multi-GPU behavior or distributed execution.
+- Dimension bands: PASS at 50% or above; NEUTRAL from 40% to below 50%; FAIL below 40%.
+- Overall Tier 3 lift: PASS at +5 points or more; FAIL at -10 points or less; values between those bands are NEUTRAL.
+- Overall verdict: PASS only when every configured dimension passes for at least one supported agent. Lift is reported as diagnostic evidence and does not override this gate.
+- The 50% attempt pass threshold is a separate per-task gate; it is not the dimension pass threshold.
+- Effectiveness is the equal-weight mean of goal completion (`goal_accuracy`) and expected workflow adherence (`behavior_check`).
+- Efficiency is 50% tool-call productivity (the backward-compatible `skill_efficiency` wire id) and 50% `token_efficiency`. Positive-case skill routing is scored under Discoverability, not Efficiency; a negative case without a routing target is N/A. N/A sources are omitted, remaining weights are renormalized, and the dimension is marked partial.
+
+Signals present in this run:
+
+- `security` (Security): unsafe operations, secret leakage, and unauthorized access.
+- `skill_execution` (Skill Execution): whether the expected skill was selected, decoys were avoided, and the workflow executed.
+- `skill_efficiency` (Tool Productivity): tool-call productivity (legacy wire id; routing is scored under Discoverability).
+- `accuracy` (Accuracy): final-answer correctness against the reference answer.
+- `goal_accuracy` (Goal Accuracy): whether the user's goal was achieved.
+- `behavior_check` (Behavior Check): whether the expected workflow behavior was followed.
+- `token_efficiency` (Token Efficiency): actual uncached prompt plus completion usage (50% of Efficiency).
+
+</details>
+
+## Freshness
+
+Regenerate this benchmark when the skill, evaluation dataset, target agent/model, evaluator version, environment, or scoring policy changes.
