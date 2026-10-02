@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 """Name generation utilities."""
@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from cudf_polars.dsl.expr import Col, NamedExpr
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Iterable, Sequence
+    from collections.abc import Generator, Iterable
 
     from cudf_polars.typing import Schema
 

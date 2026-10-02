@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Rolling logic for the RapidsMPF streaming runtime."""
 
@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import pylibcudf as plc
 from rapidsmpf.memory.buffer import MemoryType
 from rapidsmpf.memory.memory_reservation import opaque_memory_usage
 from rapidsmpf.streaming.core.actor import define_actor
@@ -16,8 +17,6 @@ from rapidsmpf.streaming.cudf.table_chunk import (
     TableChunk,
     make_table_chunks_available_or_wait,
 )
-
-import pylibcudf as plc
 
 from cudf_polars.dsl.ir import IR, Rolling
 from cudf_polars.dsl.utils.windows import duration_to_scalar
@@ -33,7 +32,7 @@ from cudf_polars.streaming.actor_graph.utils import (
     send_metadata,
     shutdown_on_error,
 )
-from cudf_polars.utils.cuda_stream import join_cuda_streams
+from cudf_polars.utils.cuda_stream import join_cuda_streams, stream_ordered_after
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -42,7 +41,6 @@ if TYPE_CHECKING:
     from rapidsmpf.memory.buffer_resource import BufferResource
     from rapidsmpf.streaming.core.channel import Channel
     from rapidsmpf.streaming.core.context import Context
-
     from rmm.pylibrmm.stream import Stream
 
     from cudf_polars.dsl.ir import IRExecutionContext
@@ -256,6 +254,8 @@ async def extract_region(
     input_chunks: list[BufferedChunk],
     row_start: int,
     row_stop: int,
+    *,
+    ir_context: IRExecutionContext,
 ) -> TableChunk:
     """Slice all buffered chunks intersecting a global row range."""
     chunks: list[TableChunk] = []
@@ -291,15 +291,15 @@ async def extract_region(
         sum(chunk.data_alloc_size() for chunk in chunks), net_memory_delta=0
     )
     chunk_streams = [chunk.stream for chunk in chunks]
-    with opaque_memory_usage(reservation):
-        stream = context.get_stream_from_pool()
-        join_cuda_streams(downstreams=(stream,), upstreams=chunk_streams)
+    with (
+        opaque_memory_usage(reservation),
+        stream_ordered_after(ir_context.get_cuda_stream, chunk_streams) as stream,
+    ):
         table = plc.concatenate.concatenate(
             [chunk.table_view() for chunk in chunks],
             stream=stream,
             mr=context.br().device_mr,
         )
-        join_cuda_streams(downstreams=chunk_streams, upstreams=(stream,))
         return TableChunk.from_pylibcudf_table(
             table, stream=stream, exclusive_view=True, br=context.br()
         )
@@ -436,7 +436,9 @@ async def evaluate_cursor(
     # We must extract at least the whole of the current cursor chunk.
     ghost_start = min(cursor.row_start, ghost_start)
     ghost_stop = max(cursor.row_stop, ghost_stop)
-    ghosted_chunk = await extract_region(context, chunks, ghost_start, ghost_stop)
+    ghosted_chunk = await extract_region(
+        context, chunks, ghost_start, ghost_stop, ir_context=ir_context
+    )
     result = await evaluate_available_chunk(
         context,
         ghosted_chunk,
@@ -476,7 +478,7 @@ async def rolling_actor(
     left for a later implementation.
     """
     async with shutdown_on_error(
-        context, ch_in, ch_out, trace_ir=ir, ir_context=ir_context
+        context, chs_in=(ch_in,), chs_out=(ch_out,), trace_ir=ir, ir_context=ir_context
     ) as tracer:
         metadata_in = await recv_metadata(ch_in, context)
         if comm.nranks != 1 and not metadata_in.duplicated:
@@ -487,12 +489,12 @@ async def rolling_actor(
             if tracer is not None:
                 tracer.set_duplicated()
 
-            stream = context.get_stream_from_pool()
+            stream = ir_context.get_cuda_stream()
             ag = AllGatherManager(context, comm, collective_id)
             with ag.inserting() as inserter:
                 while (msg := await ch_in.recv(context)) is not None:
                     chunk = TableChunk.from_message(msg, context.br())
-                    inserter.insert(msg.sequence_number, chunk)
+                    await inserter.insert(msg.sequence_number, chunk)
             table = await ag.extract_concatenated(
                 stream, ordered=True, ir_context=ir_context
             )
@@ -509,7 +511,7 @@ async def rolling_actor(
                 ir_context=ir_context,
             )
             if tracer is not None:
-                tracer.add_chunk(table=result.table_view())
+                tracer.add_chunk(chunk=result)
             await ch_out.send(context, Message(0, result))
             await ch_out.drain(context)
             return
@@ -526,7 +528,7 @@ async def rolling_actor(
         if tracer is not None and metadata_in.duplicated:
             tracer.set_duplicated()
 
-        window = make_window(ir, context.get_stream_from_pool())
+        window = make_window(ir, ir_context.get_cuda_stream())
         # streams that window deallocation will be ordered after
         observed_streams: set[Stream] = set()
         # chunks we have already evaluated that might be needed to evaluate future chunks
@@ -565,7 +567,7 @@ async def rolling_actor(
                     if cursor.num_rows != 0:
                         history.append(cursor)
                 if tracer is not None:
-                    tracer.add_chunk(table=result.table_view())
+                    tracer.add_chunk(chunk=result)
                 await ch_out.send(context, Message(cursor.sequence_number, result))
 
                 if future:
