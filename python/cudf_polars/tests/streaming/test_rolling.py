@@ -98,6 +98,26 @@ def test_rolling_integer_offset(engine, period, offset, closed) -> None:
     assert_gpu_result_equal(q, engine=engine)
 
 
+def test_rolling_checks_cross_chunk_sortedness(spmd_engine_factory) -> None:
+    engine = spmd_engine_factory(
+        StreamingOptions(max_rows_per_partition=2, fallback_mode="raise"),
+    )
+    df = pl.LazyFrame(
+        {
+            "orderby": [100, 101, 90, 91],
+            "values": [1, 2, 3, 4],
+        }
+    )
+    q = df.rolling("orderby", period="10i", offset="20i").agg(
+        sum_values=pl.col("values").sum()
+    )
+
+    with pytest.RaisesGroup(
+        pytest.RaisesExc(RuntimeError, match="Index column 'orderby'.*not sorted")
+    ):
+        q.collect(engine=engine)
+
+
 @pytest.mark.parametrize("closed", ["left", "right", "both", "none"])
 def test_rolling_datetime_period(engine, closed) -> None:
     df = pl.LazyFrame(

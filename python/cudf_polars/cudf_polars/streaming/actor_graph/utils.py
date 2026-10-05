@@ -665,19 +665,19 @@ def _remap_scheme_simple(
     ir: IR, scheme: PartitioningScheme, child: IR
 ) -> PartitioningScheme:
     if isinstance(scheme, HashScheme):
-        old_key_names = indices_to_names(scheme.column_indices, child.schema)
         try:
+            old_key_names = indices_to_names(scheme.column_indices, child.schema)
             new_indices = names_to_indices(old_key_names, ir.schema)
-        except (ValueError, KeyError):
+        except (ValueError, KeyError, IndexError):
             return None
         return HashScheme(new_indices, scheme.modulus)
     if isinstance(scheme, OrderScheme):
         new_orderings: list[Ordering] = []
         for ordering in scheme.orderings:
-            old_key_names = indices_to_names(ordering.column_indices, child.schema)
             try:
+                old_key_names = indices_to_names(ordering.column_indices, child.schema)
                 new_indices = names_to_indices(old_key_names, ir.schema)
-            except (ValueError, KeyError):
+            except (ValueError, KeyError, IndexError):
                 continue
             new_orderings.append(_update_ordering_indices(ordering, new_indices))
         if new_orderings:
