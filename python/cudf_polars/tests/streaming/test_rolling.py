@@ -109,12 +109,7 @@ def test_rolling_integer_period(engine, closed) -> None:
         ),
         ("both", "10i", "-30i"),
         ("none", "10i", "-5i"),
-        pytest.param(
-            "none",
-            "10i",
-            "20i",
-            marks=POLARS_LT_136_EMPTY_SUM_XFAIL,
-        ),
+        ("none", "10i", "20i"),
         ("none", "10i", "-30i"),
     ],
     ids=[
