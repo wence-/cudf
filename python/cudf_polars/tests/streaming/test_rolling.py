@@ -19,6 +19,14 @@ from cudf_polars.testing.asserts import (
 from cudf_polars.testing.engine_utils import warns_on_spmd
 from cudf_polars.utils.versions import POLARS_VERSION_LT_136, POLARS_VERSION_LT_139
 
+POLARS_LT_136_EMPTY_SUM_XFAIL = pytest.mark.xfail(
+    POLARS_VERSION_LT_136,
+    reason=(
+        "Polars 1.35 returns null for sum over these empty rolling windows; "
+        "newer Polars returns 0."
+    ),
+)
+
 
 @pytest.fixture
 def engine(streaming_engine_factory):
@@ -81,23 +89,32 @@ def test_rolling_integer_period(engine, closed) -> None:
             "left",
             "10i",
             "20i",
-            marks=pytest.mark.xfail(
-                POLARS_VERSION_LT_136,
-                reason=(
-                    "Polars 1.35 returns null for sum over these empty rolling "
-                    "windows; newer Polars returns 0."
-                ),
-            ),
+            marks=POLARS_LT_136_EMPTY_SUM_XFAIL,
         ),
         ("left", "10i", "-30i"),
         ("right", "10i", "-5i"),
-        ("right", "10i", "20i"),
+        pytest.param(
+            "right",
+            "10i",
+            "20i",
+            marks=POLARS_LT_136_EMPTY_SUM_XFAIL,
+        ),
         ("right", "10i", "-30i"),
         ("both", "10i", "-5i"),
-        ("both", "10i", "20i"),
+        pytest.param(
+            "both",
+            "10i",
+            "20i",
+            marks=POLARS_LT_136_EMPTY_SUM_XFAIL,
+        ),
         ("both", "10i", "-30i"),
         ("none", "10i", "-5i"),
-        ("none", "10i", "20i"),
+        pytest.param(
+            "none",
+            "10i",
+            "20i",
+            marks=POLARS_LT_136_EMPTY_SUM_XFAIL,
+        ),
         ("none", "10i", "-30i"),
     ],
     ids=[
