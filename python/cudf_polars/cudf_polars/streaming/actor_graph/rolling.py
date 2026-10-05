@@ -92,14 +92,6 @@ class Window:
     stream: Stream
 
 
-@dataclass
-class IndexValue:
-    """Single index value retained for cross-chunk sortedness checks."""
-
-    column: plc.Column
-    stream: Stream
-
-
 def index_with_offset(
     index: plc.Column,
     row: int,
@@ -117,46 +109,6 @@ def index_with_offset(
         stream=stream,
         mr=br.device_mr,
     )
-
-
-def index_value(index: plc.Column, row: int, stream: Stream) -> IndexValue:
-    """Return ``index[row]`` as a single-row device column."""
-    (value,) = plc.copying.slice(index, [row, row + 1], stream=stream)
-    return IndexValue(value, stream)
-
-
-def check_sorted_boundary(
-    ir: Rolling,
-    previous_index_value: IndexValue | None,
-    cursor: BufferedChunk,
-    *,
-    br: BufferResource,
-) -> None:
-    """Raise if a non-empty cursor is ordered before the prior non-empty chunk."""
-    if previous_index_value is None:
-        return
-    current_index_value = index_value(cursor.index_column, 0, cursor.chunk.stream)
-    join_cuda_streams(
-        downstreams=(current_index_value.stream,),
-        upstreams=(previous_index_value.stream,),
-    )
-    boundary = plc.concatenate.concatenate(
-        [
-            plc.Table([previous_index_value.column]),
-            plc.Table([current_index_value.column]),
-        ],
-        stream=current_index_value.stream,
-        mr=br.device_mr,
-    )
-    if not plc.sorting.is_sorted(
-        boundary,
-        [plc.types.Order.ASCENDING],
-        [plc.types.NullOrder.BEFORE],
-        stream=current_index_value.stream,
-    ):
-        raise RuntimeError(
-            f"Index column '{ir.index.name}' in rolling is not sorted, please sort first"
-        )
 
 
 async def prepare_chunk(
@@ -585,7 +537,6 @@ async def rolling_actor(
         future: list[BufferedChunk] = []
         try:
             input_exhausted = False
-            previous_index_value: IndexValue | None = None
             cursor, row_offset = await recv_buffered_chunk(
                 context, ch_in, row_offset=0, window=window
             )
@@ -599,9 +550,6 @@ async def rolling_actor(
                         ir_context=ir_context,
                     )
                 else:
-                    check_sorted_boundary(
-                        ir, previous_index_value, cursor, br=context.br()
-                    )
                     history = evict_history(history, cursor, window, br=context.br())
                     if not input_exhausted:
                         input_exhausted, row_offset, future = await fill_future(
@@ -618,11 +566,6 @@ async def rolling_actor(
                     )
                     if cursor.num_rows != 0:
                         history.append(cursor)
-                        previous_index_value = index_value(
-                            cursor.index_column,
-                            cursor.num_rows - 1,
-                            cursor.chunk.stream,
-                        )
                 if tracer is not None:
                     tracer.add_chunk(chunk=result)
                 await ch_out.send(context, Message(cursor.sequence_number, result))

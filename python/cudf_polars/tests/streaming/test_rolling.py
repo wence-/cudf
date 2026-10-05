@@ -74,15 +74,47 @@ def test_rolling_integer_period(engine, closed) -> None:
 
 
 @pytest.mark.parametrize(
-    "period, offset",
+    "closed, period, offset",
     [
-        ("10i", "-5i"),
-        ("10i", "20i"),
-        ("10i", "-30i"),
+        ("left", "10i", "-5i"),
+        pytest.param(
+            "left",
+            "10i",
+            "20i",
+            marks=pytest.mark.xfail(
+                POLARS_VERSION_LT_136,
+                reason=(
+                    "Polars 1.35 returns null for sum over these empty rolling "
+                    "windows; newer Polars returns 0."
+                ),
+            ),
+        ),
+        ("left", "10i", "-30i"),
+        ("right", "10i", "-5i"),
+        ("right", "10i", "20i"),
+        ("right", "10i", "-30i"),
+        ("both", "10i", "-5i"),
+        ("both", "10i", "20i"),
+        ("both", "10i", "-30i"),
+        ("none", "10i", "-5i"),
+        ("none", "10i", "20i"),
+        ("none", "10i", "-30i"),
     ],
-    ids=["nonzero-overlap", "fully-leading", "fully-trailing"],
+    ids=[
+        "left-nonzero-overlap",
+        "left-fully-leading",
+        "left-fully-trailing",
+        "right-nonzero-overlap",
+        "right-fully-leading",
+        "right-fully-trailing",
+        "both-nonzero-overlap",
+        "both-fully-leading",
+        "both-fully-trailing",
+        "none-nonzero-overlap",
+        "none-fully-leading",
+        "none-fully-trailing",
+    ],
 )
-@pytest.mark.parametrize("closed", ["left", "right", "both", "none"])
 def test_rolling_integer_offset(engine, period, offset, closed) -> None:
     df = pl.LazyFrame(
         {
@@ -96,26 +128,6 @@ def test_rolling_integer_offset(engine, period, offset, closed) -> None:
     )
 
     assert_gpu_result_equal(q, engine=engine)
-
-
-def test_rolling_checks_cross_chunk_sortedness(spmd_engine_factory) -> None:
-    engine = spmd_engine_factory(
-        StreamingOptions(max_rows_per_partition=2, fallback_mode="raise"),
-    )
-    df = pl.LazyFrame(
-        {
-            "orderby": [100, 101, 90, 91],
-            "values": [1, 2, 3, 4],
-        }
-    )
-    q = df.rolling("orderby", period="10i", offset="20i").agg(
-        sum_values=pl.col("values").sum()
-    )
-
-    with pytest.RaisesGroup(
-        pytest.RaisesExc(RuntimeError, match="Index column 'orderby'.*not sorted")
-    ):
-        q.collect(engine=engine)
 
 
 @pytest.mark.parametrize("closed", ["left", "right", "both", "none"])
