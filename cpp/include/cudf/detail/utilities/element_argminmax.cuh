@@ -53,19 +53,15 @@ struct element_argminmax_fn {
                            .element<T>(d_col.element<dictionary32>(rhs_idx).value())
                        : d_col.element<T>(rhs_idx);
 
-    bool less;
-    bool equal;
     if constexpr (std::is_same_v<T, string_view>) {
       // Ordering and equality share one comparison, including for dictionary keys.
       auto const comparison = lhs.compare(rhs);
-      less                  = comparison < 0;
-      equal                 = comparison == 0;
+      if (comparison == 0) { return lhs_idx < rhs_idx ? lhs_idx : rhs_idx; }
+      return (comparison < 0) == arg_min ? lhs_idx : rhs_idx;
     } else {
-      less  = lhs < rhs;
-      equal = lhs == rhs;
+      if (lhs == rhs) { return lhs_idx < rhs_idx ? lhs_idx : rhs_idx; }
+      return (lhs < rhs) == arg_min ? lhs_idx : rhs_idx;
     }
-    if (equal) { return lhs_idx < rhs_idx ? lhs_idx : rhs_idx; }
-    return less == arg_min ? lhs_idx : rhs_idx;
   }
 };
 
