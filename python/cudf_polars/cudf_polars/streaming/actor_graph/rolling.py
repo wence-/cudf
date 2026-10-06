@@ -77,24 +77,6 @@ class BufferedChunk:
 
 
 @dataclass
-class InputOrder:
-    """Tracks the sequence-number order expected by the rolling actor."""
-
-    last_sequence_number: int | None = None
-
-    def observe(self, sequence_number: int) -> None:
-        """Raise if the next input chunk is not in increasing order."""
-        if (
-            self.last_sequence_number is not None
-            and sequence_number <= self.last_sequence_number
-        ):
-            raise RuntimeError(
-                "Rolling input chunks must arrive in increasing sequence-number order"
-            )
-        self.last_sequence_number = sequence_number
-
-
-@dataclass
 class Window:
     """
     Chunk-independent portion of the window description.
@@ -392,14 +374,11 @@ async def recv_buffered_chunk(
     *,
     row_offset: int,
     window: Window,
-    input_order: InputOrder | None = None,
     observed_streams: set[Stream] | None = None,
 ) -> tuple[BufferedChunk | None, int]:
     """Receive and prepare one input chunk."""
     if (msg := await ch_in.recv(context)) is None:
         return None, row_offset
-    if input_order is not None:
-        input_order.observe(msg.sequence_number)
     chunk = await prepare_chunk(
         context,
         msg,
@@ -418,7 +397,6 @@ async def fill_future(
     row_offset: int,
     *,
     window: Window,
-    input_order: InputOrder | None = None,
     observed_streams: set[Stream] | None = None,
 ) -> tuple[bool, int, list[BufferedChunk]]:
     """
@@ -438,8 +416,6 @@ async def fill_future(
         Offset of the next chunk's rows in the logical "global" frame.
     window
         Window definition for finding bounding box
-    input_order
-        Sequence-number ordering tracker for chunks read from the input channel.
     observed_streams
         Streams that own staged chunk data or derived window-bound columns.
 
@@ -463,7 +439,6 @@ async def fill_future(
             ch_in,
             row_offset=row_offset,
             window=window,
-            input_order=input_order,
             observed_streams=observed_streams,
         )
         if chunk is None:
@@ -630,13 +605,11 @@ async def rolling_actor(
         try:
             input_exhausted = False
             previous_index_value = None
-            input_order = InputOrder()
             cursor, row_offset = await recv_buffered_chunk(
                 context,
                 ch_in,
                 row_offset=0,
                 window=window,
-                input_order=input_order,
                 observed_streams=observed_streams,
             )
             while cursor is not None:
@@ -663,7 +636,6 @@ async def rolling_actor(
                             future,
                             row_offset,
                             window=window,
-                            input_order=input_order,
                             observed_streams=observed_streams,
                         )
                     result = await evaluate_cursor(
@@ -688,7 +660,6 @@ async def rolling_actor(
                         ch_in,
                         row_offset=row_offset,
                         window=window,
-                        input_order=input_order,
                         observed_streams=observed_streams,
                     )
         finally:
