@@ -82,6 +82,62 @@ def test_rolling_integer_period(engine, closed) -> None:
 
 
 @pytest.mark.parametrize(
+    "df",
+    [
+        pl.LazyFrame(
+            {
+                "orderby": pl.Series([1, 4, 8, 10], dtype=pl.Int32),
+                "values": [1, 2, 3, 4],
+            }
+        ),
+        pl.LazyFrame(
+            {
+                "orderby": [1, 2, 3, 4, 5, 6],
+                "values": [1, 2, 3, 4, 5, 6],
+            }
+        ).filter(pl.col("orderby") > 4),
+        pl.LazyFrame(
+            {
+                "orderby": [1, 2, 2, 3],
+                "values": [1, 2, 3, 4],
+            }
+        ),
+    ],
+    ids=["int32-index", "empty-input-partitions", "duplicate-boundary-index"],
+)
+def test_rolling_integer_edge_cases(engine, df) -> None:
+    q = df.rolling("orderby", period="2i").agg(
+        sum_values=pl.col("values").sum(),
+        count=pl.len(),
+    )
+
+    assert_gpu_result_equal(q, engine=engine)
+
+
+def test_rolling_unsorted_across_chunks_raises(spmd_engine_factory) -> None:
+    engine = spmd_engine_factory(
+        StreamingOptions(max_rows_per_partition=2, fallback_mode="raise"),
+    )
+    df = pl.LazyFrame(
+        {
+            "orderby": [1, 10, 2, 3],
+            "values": [1, 2, 3, 4],
+        }
+    )
+    q = df.rolling("orderby", period="1i").agg(
+        sum_values=pl.col("values").sum(),
+    )
+
+    with pytest.RaisesGroup(
+        pytest.RaisesExc(
+            RuntimeError,
+            match=r"Index column.*in rolling is not sorted, please sort first",
+        )
+    ):
+        q.collect(engine=engine)
+
+
+@pytest.mark.parametrize(
     "closed, period, offset",
     [
         ("left", "10i", "-5i"),

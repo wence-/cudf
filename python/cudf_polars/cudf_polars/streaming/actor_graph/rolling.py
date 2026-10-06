@@ -32,6 +32,7 @@ from cudf_polars.streaming.actor_graph.utils import (
     send_metadata,
     shutdown_on_error,
 )
+from cudf_polars.streaming.utils import _fallback_inform
 from cudf_polars.utils.cuda_stream import join_cuda_streams, stream_ordered_after
 
 if TYPE_CHECKING:
@@ -45,6 +46,7 @@ if TYPE_CHECKING:
 
     from cudf_polars.dsl.ir import IRExecutionContext
     from cudf_polars.streaming.actor_graph.dispatch import SubNetGenerator
+    from cudf_polars.utils.config import ConfigOptions, StreamingExecutor
 
 
 @dataclass
@@ -54,7 +56,7 @@ class BufferedChunk:
 
     Consider a stream of chunks representing a frame with N total rows.
     Each BufferedChunk represents a non-overlapping slice of that frame,
-    corresponding to the rows [global_start, global_stop)
+    corresponding to the rows [row_start, row_stop)
     """
 
     sequence_number: int
@@ -117,6 +119,7 @@ async def prepare_chunk(
     *,
     row_offset: int,
     window: Window,
+    observed_streams: set[Stream] | None = None,
 ) -> BufferedChunk:
     """Convert a message to a staged chunk and extract its physical index."""
     chunk = TableChunk.from_message(msg, br=context.br())
@@ -128,6 +131,8 @@ async def prepare_chunk(
         reserve_extra=nrows * 8,
         net_memory_delta=0,
     )
+    if observed_streams is not None:
+        observed_streams.add(chunk.stream)
     with opaque_memory_usage(extra):
         index_column = chunk.table_view().columns()[window.index]
         if index_column.type() != window.index_dtype:
@@ -314,7 +319,7 @@ async def evaluate_available_chunk(
 ) -> TableChunk:
     """Evaluate an already available chunk."""
     reservation = await context.memory(MemoryType.DEVICE).reserve_or_wait(
-        chunk.data_alloc_size(), net_memory_delta=-chunk.data_alloc_size()
+        chunk.data_alloc_size(), net_memory_delta=0
     )
     with opaque_memory_usage(reservation):
         return await ir_context.to_thread(
@@ -348,11 +353,18 @@ async def recv_buffered_chunk(
     *,
     row_offset: int,
     window: Window,
+    observed_streams: set[Stream] | None = None,
 ) -> tuple[BufferedChunk | None, int]:
     """Receive and prepare one input chunk."""
     if (msg := await ch_in.recv(context)) is None:
         return None, row_offset
-    chunk = await prepare_chunk(context, msg, row_offset=row_offset, window=window)
+    chunk = await prepare_chunk(
+        context,
+        msg,
+        row_offset=row_offset,
+        window=window,
+        observed_streams=observed_streams,
+    )
     return chunk, chunk.row_stop
 
 
@@ -364,6 +376,7 @@ async def fill_future(
     row_offset: int,
     *,
     window: Window,
+    observed_streams: set[Stream] | None = None,
 ) -> tuple[bool, int, list[BufferedChunk]]:
     """
     Read "leading" chunks from the input channel for the current chunk.
@@ -382,6 +395,8 @@ async def fill_future(
         Offset of the next chunk's rows in the logical "global" frame.
     window
         Window definition for finding bounding box
+    observed_streams
+        Streams that own staged chunk data or derived window-bound columns.
 
     Returns
     -------
@@ -399,7 +414,11 @@ async def fill_future(
         br=context.br(),
     ):
         chunk, row_offset = await recv_buffered_chunk(
-            context, ch_in, row_offset=row_offset, window=window
+            context,
+            ch_in,
+            row_offset=row_offset,
+            window=window,
+            observed_streams=observed_streams,
         )
         if chunk is None:
             return True, row_offset, future
@@ -458,6 +477,27 @@ async def evaluate_cursor(
     )
 
 
+def index_value(chunk: BufferedChunk, row: int) -> Any:
+    """Return one index value from a non-empty buffered chunk."""
+    stream = chunk.chunk.stream
+    (value,) = plc.copying.slice(chunk.index_column, [row, row + 1], stream=stream)
+    return value.to_scalar(stream=stream).to_py(stream=stream)
+
+
+def check_cross_chunk_sorted(
+    cursor: BufferedChunk, *, index_name: str, previous: Any | None
+) -> Any | None:
+    """Return the cursor's last index value after cross-chunk sortedness check."""
+    if cursor.num_rows == 0:
+        return previous
+    first = index_value(cursor, 0)
+    if previous is not None and first < previous:
+        raise RuntimeError(
+            f"Index column '{index_name}' in rolling is not sorted, please sort first"
+        )
+    return index_value(cursor, cursor.num_rows - 1)
+
+
 @define_actor()
 async def rolling_actor(
     context: Context,
@@ -468,6 +508,7 @@ async def rolling_actor(
     ch_in: Channel[TableChunk],
     *,
     collective_id: int,
+    config_options: ConfigOptions[StreamingExecutor],
 ) -> None:
     """
     Single-rank streaming actor for range-based rolling aggregations.
@@ -482,6 +523,11 @@ async def rolling_actor(
     ) as tracer:
         metadata_in = await recv_metadata(ch_in, context)
         if comm.nranks != 1 and not metadata_in.duplicated:
+            _fallback_inform(
+                "Rolling does not support multi-rank inputs. "
+                "Falling back to all-gather evaluation.",
+                config_options,
+            )
             metadata = ChannelMetadata(
                 local_count=1, partitioning=None, duplicated=True
             )
@@ -537,11 +583,15 @@ async def rolling_actor(
         future: list[BufferedChunk] = []
         try:
             input_exhausted = False
+            previous_index_value = None
             cursor, row_offset = await recv_buffered_chunk(
-                context, ch_in, row_offset=0, window=window
+                context,
+                ch_in,
+                row_offset=0,
+                window=window,
+                observed_streams=observed_streams,
             )
             while cursor is not None:
-                observed_streams.add(cursor.chunk.stream)
                 if cursor.num_rows == 0:
                     result = await evaluate_available_chunk(
                         context,
@@ -550,10 +600,19 @@ async def rolling_actor(
                         ir_context=ir_context,
                     )
                 else:
+                    previous_index_value = check_cross_chunk_sorted(
+                        cursor, index_name=ir.index.name, previous=previous_index_value
+                    )
                     history = evict_history(history, cursor, window, br=context.br())
                     if not input_exhausted:
                         input_exhausted, row_offset, future = await fill_future(
-                            context, ch_in, cursor, future, row_offset, window=window
+                            context,
+                            ch_in,
+                            cursor,
+                            future,
+                            row_offset,
+                            window=window,
+                            observed_streams=observed_streams,
                         )
                     result = await evaluate_cursor(
                         context,
@@ -564,8 +623,7 @@ async def rolling_actor(
                         future=future,
                         window=window,
                     )
-                    if cursor.num_rows != 0:
-                        history.append(cursor)
+                    history.append(cursor)
                 if tracer is not None:
                     tracer.add_chunk(chunk=result)
                 await ch_out.send(context, Message(cursor.sequence_number, result))
@@ -574,7 +632,11 @@ async def rolling_actor(
                     cursor, *future = future
                 else:
                     cursor, row_offset = await recv_buffered_chunk(
-                        context, ch_in, row_offset=row_offset, window=window
+                        context,
+                        ch_in,
+                        row_offset=row_offset,
+                        window=window,
+                        observed_streams=observed_streams,
                     )
         finally:
             join_cuda_streams(
@@ -605,6 +667,7 @@ def _(
             channels[ir].reserve_input_slot(),
             channels[ir.children[0]].reserve_output_slot(),
             collective_id=collective_id,
+            config_options=rec.state["config_options"],
         )
     ]
     return actors, channels
