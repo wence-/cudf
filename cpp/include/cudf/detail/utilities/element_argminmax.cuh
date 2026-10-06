@@ -7,6 +7,7 @@
 
 #include <cudf/column/column_device_view.cuh>
 #include <cudf/dictionary/dictionary_column_view.hpp>
+#include <cudf/strings/string_view.cuh>
 #include <cudf/types.hpp>
 #include <cudf/utilities/error.hpp>
 #include <cudf/utilities/traits.hpp>
@@ -19,7 +20,9 @@ namespace detail {
 /**
  * @brief Binary `argmin`/`argmax` operator
  *
- * @tparam T Type of the underlying column. Must support '<' operator.
+ * Equal values select the smaller row index, independently of reduction order.
+ *
+ * @tparam T Type of the underlying column. Must support '<' and '==' operators.
  */
 template <typename T>
 struct element_argminmax_fn {
@@ -50,10 +53,18 @@ struct element_argminmax_fn {
                            .element<T>(d_col.element<dictionary32>(rhs_idx).value())
                        : d_col.element<T>(rhs_idx);
 
-    // Return `lhs_idx` iff:
-    //   row(lhs_idx) <  row(rhs_idx) and finding ArgMin, or
-    //   row(lhs_idx) >= row(rhs_idx) and finding ArgMax.
-    auto const less = lhs < rhs;
+    bool less;
+    bool equal;
+    if constexpr (std::is_same_v<T, string_view>) {
+      // Ordering and equality share one comparison, including for dictionary keys.
+      auto const comparison = lhs.compare(rhs);
+      less                  = comparison < 0;
+      equal                 = comparison == 0;
+    } else {
+      less  = lhs < rhs;
+      equal = lhs == rhs;
+    }
+    if (equal) { return lhs_idx < rhs_idx ? lhs_idx : rhs_idx; }
     return less == arg_min ? lhs_idx : rhs_idx;
   }
 };
