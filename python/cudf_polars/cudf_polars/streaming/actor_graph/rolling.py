@@ -77,6 +77,24 @@ class BufferedChunk:
 
 
 @dataclass
+class InputOrder:
+    """Tracks the sequence-number order expected by the rolling actor."""
+
+    last_sequence_number: int | None = None
+
+    def observe(self, sequence_number: int) -> None:
+        """Raise if the next input chunk is not in increasing order."""
+        if (
+            self.last_sequence_number is not None
+            and sequence_number <= self.last_sequence_number
+        ):
+            raise RuntimeError(
+                "Rolling input chunks must arrive in increasing sequence-number order"
+            )
+        self.last_sequence_number = sequence_number
+
+
+@dataclass
 class Window:
     """
     Chunk-independent portion of the window description.
@@ -191,6 +209,27 @@ def make_window(
     # to read the windows every time we add them to a chunk.
     stream.synchronize()
     return offsets
+
+
+def _chrono_storage_dtype(dtype: plc.DataType) -> plc.DataType:
+    """Return the integer storage type for a chrono dtype."""
+    if dtype.id() in (plc.TypeId.TIMESTAMP_DAYS, plc.TypeId.DURATION_DAYS):
+        return plc.DataType(plc.TypeId.INT32)
+    return plc.DataType(plc.TypeId.INT64)
+
+
+def _host_ordering_value(
+    value: plc.Column,
+    *,
+    stream: Stream,
+    br: BufferResource,
+) -> Any:
+    """Copy a single-row ordering value to host."""
+    if plc.traits.is_chrono(value.type()):
+        value = plc.unary.bit_cast(
+            value, _chrono_storage_dtype(value.type()), stream=stream, mr=br.device_mr
+        )
+    return value.to_scalar(stream=stream).to_py(stream=stream)
 
 
 def global_insertion_row(
@@ -353,11 +392,14 @@ async def recv_buffered_chunk(
     *,
     row_offset: int,
     window: Window,
+    input_order: InputOrder | None = None,
     observed_streams: set[Stream] | None = None,
 ) -> tuple[BufferedChunk | None, int]:
     """Receive and prepare one input chunk."""
     if (msg := await ch_in.recv(context)) is None:
         return None, row_offset
+    if input_order is not None:
+        input_order.observe(msg.sequence_number)
     chunk = await prepare_chunk(
         context,
         msg,
@@ -376,6 +418,7 @@ async def fill_future(
     row_offset: int,
     *,
     window: Window,
+    input_order: InputOrder | None = None,
     observed_streams: set[Stream] | None = None,
 ) -> tuple[bool, int, list[BufferedChunk]]:
     """
@@ -395,6 +438,8 @@ async def fill_future(
         Offset of the next chunk's rows in the logical "global" frame.
     window
         Window definition for finding bounding box
+    input_order
+        Sequence-number ordering tracker for chunks read from the input channel.
     observed_streams
         Streams that own staged chunk data or derived window-bound columns.
 
@@ -418,6 +463,7 @@ async def fill_future(
             ch_in,
             row_offset=row_offset,
             window=window,
+            input_order=input_order,
             observed_streams=observed_streams,
         )
         if chunk is None:
@@ -477,25 +523,25 @@ async def evaluate_cursor(
     )
 
 
-def index_value(chunk: BufferedChunk, row: int) -> Any:
+def index_value(chunk: BufferedChunk, row: int, *, br: BufferResource) -> Any:
     """Return one index value from a non-empty buffered chunk."""
     stream = chunk.chunk.stream
     (value,) = plc.copying.slice(chunk.index_column, [row, row + 1], stream=stream)
-    return value.to_scalar(stream=stream).to_py(stream=stream)
+    return _host_ordering_value(value, stream=stream, br=br)
 
 
 def check_cross_chunk_sorted(
-    cursor: BufferedChunk, *, index_name: str, previous: Any | None
+    cursor: BufferedChunk, *, index_name: str, previous: Any | None, br: BufferResource
 ) -> Any | None:
     """Return the cursor's last index value after cross-chunk sortedness check."""
     if cursor.num_rows == 0:
         return previous
-    first = index_value(cursor, 0)
+    first = index_value(cursor, 0, br=br)
     if previous is not None and first < previous:
         raise RuntimeError(
             f"Index column '{index_name}' in rolling is not sorted, please sort first"
         )
-    return index_value(cursor, cursor.num_rows - 1)
+    return index_value(cursor, cursor.num_rows - 1, br=br)
 
 
 @define_actor()
@@ -584,11 +630,13 @@ async def rolling_actor(
         try:
             input_exhausted = False
             previous_index_value = None
+            input_order = InputOrder()
             cursor, row_offset = await recv_buffered_chunk(
                 context,
                 ch_in,
                 row_offset=0,
                 window=window,
+                input_order=input_order,
                 observed_streams=observed_streams,
             )
             while cursor is not None:
@@ -601,7 +649,10 @@ async def rolling_actor(
                     )
                 else:
                     previous_index_value = check_cross_chunk_sorted(
-                        cursor, index_name=ir.index.name, previous=previous_index_value
+                        cursor,
+                        index_name=ir.index.name,
+                        previous=previous_index_value,
+                        br=context.br(),
                     )
                     history = evict_history(history, cursor, window, br=context.br())
                     if not input_exhausted:
@@ -612,6 +663,7 @@ async def rolling_actor(
                             future,
                             row_offset,
                             window=window,
+                            input_order=input_order,
                             observed_streams=observed_streams,
                         )
                     result = await evaluate_cursor(
@@ -636,6 +688,7 @@ async def rolling_actor(
                         ch_in,
                         row_offset=row_offset,
                         window=window,
+                        input_order=input_order,
                         observed_streams=observed_streams,
                     )
         finally:

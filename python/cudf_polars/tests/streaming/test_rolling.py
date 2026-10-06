@@ -114,17 +114,33 @@ def test_rolling_integer_edge_cases(engine, df) -> None:
     assert_gpu_result_equal(q, engine=engine)
 
 
-def test_rolling_unsorted_across_chunks_raises(spmd_engine_factory) -> None:
+@pytest.mark.parametrize(
+    "orderby, period",
+    [
+        ([1, 10, 2, 3], "1i"),
+        (
+            pl.Series(
+                [
+                    dt.datetime(2020, 1, 1, 0, 0, 1),
+                    dt.datetime(2020, 1, 1, 0, 0, 10),
+                    dt.datetime(2020, 1, 1, 0, 0, 2),
+                    dt.datetime(2020, 1, 1, 0, 0, 3),
+                ],
+                dtype=pl.Datetime("us"),
+            ),
+            "1s",
+        ),
+    ],
+    ids=["integer", "datetime"],
+)
+def test_rolling_unsorted_across_chunks_raises(
+    spmd_engine_factory, orderby, period
+) -> None:
     engine = spmd_engine_factory(
         StreamingOptions(max_rows_per_partition=2, fallback_mode="raise"),
     )
-    df = pl.LazyFrame(
-        {
-            "orderby": [1, 10, 2, 3],
-            "values": [1, 2, 3, 4],
-        }
-    )
-    q = df.rolling("orderby", period="1i").agg(
+    df = pl.LazyFrame({"orderby": orderby, "values": [1, 2, 3, 4]})
+    q = df.rolling("orderby", period=period).agg(
         sum_values=pl.col("values").sum(),
     )
 
