@@ -79,7 +79,7 @@ bool can_use_hash_groupby(std::span<aggregation_request const> requests)
     return std::all_of(r.aggregations.begin(), r.aggregations.end(), [v_type](auto const& a) {
       if (not is_hash_aggregation(a->kind)) { return false; }
       // compound aggregations are made up of simple aggregations
-      auto const agg_kinds = get_simple_aggregations(*a, v_type);
+      auto const agg_kinds = get_simple_aggregations(*a, v_type, true);
       return std::all_of(agg_kinds.begin(), agg_kinds.end(), [v_type = v_type](auto k) {
         return is_single_pass_agg_supported(v_type, k);
       });

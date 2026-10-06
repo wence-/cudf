@@ -28,6 +28,7 @@ namespace cudf::groupby::detail::hash {
  *
  * @param requests The aggregation requests
  * @param stream The CUDA stream
+ * @param stable_m2 Extract M2 and count for CSR reduction; false preserves streaming raw moments
  *
  * @return A tuple containing:
  *         - A table_view containing the input values columns for the single-pass aggregations,
@@ -42,15 +43,19 @@ std::tuple<table_view,
            std::vector<std::unique_ptr<aggregation>>,
            std::vector<int8_t>,
            bool>
-extract_single_pass_aggs(std::span<aggregation_request const> requests, cuda::stream_ref stream);
+extract_single_pass_aggs(std::span<aggregation_request const> requests,
+                         cuda::stream_ref stream,
+                         bool stable_m2 = false);
 
 /**
  * @brief Get simple aggregations from groupby aggregation
  *
  * @param agg The groupby aggregation
  * @param values_type The data type for the aggregation
+ * @param stable_m2 Whether M2 is reduced directly over CSR groups
  * @return A vector of aggregation kinds
  */
 std::vector<aggregation::Kind> get_simple_aggregations(groupby_aggregation const& agg,
-                                                       data_type values_type);
+                                                       data_type values_type,
+                                                       bool stable_m2 = false);
 }  // namespace cudf::groupby::detail::hash

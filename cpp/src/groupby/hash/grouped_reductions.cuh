@@ -103,9 +103,17 @@ CUDF_KERNEL void reduce_segments_kernel(size_type num_segments,
 {
   static_assert(threads_per_segment == cudf::detail::warp_size ||
                 threads_per_segment == reduction_block_size);
-  using segment_reduce = cuda::std::conditional_t<threads_per_segment == cudf::detail::warp_size,
-                                                  cub::WarpReduce<T, cudf::detail::warp_size>,
-                                                  cub::BlockReduce<T, reduction_block_size>>;
+  constexpr auto block_algorithm = [] {
+    if constexpr (requires { Op::block_reduce_algorithm; }) {
+      return Op::block_reduce_algorithm;
+    } else {
+      return cub::BLOCK_REDUCE_WARP_REDUCTIONS;
+    }
+  }();
+  using segment_reduce =
+    cuda::std::conditional_t<threads_per_segment == cudf::detail::warp_size,
+                             cub::WarpReduce<T, cudf::detail::warp_size>,
+                             cub::BlockReduce<T, reduction_block_size, block_algorithm>>;
   __shared__
     typename segment_reduce::TempStorage storage[reduction_block_size / threads_per_segment];
   // Direct warps stay within a column; blocks retain interleaved chunk scheduling.
