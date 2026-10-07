@@ -60,7 +60,7 @@ namespace {
 auto extract_hash_groupby_aggs(std::span<aggregation_request const> requests,
                                cuda::stream_ref stream)
 {
-  if (requests.size() <= 1) { return extract_single_pass_aggs(requests, stream, true); }
+  if (requests.size() <= 1) { return extract_single_pass_aggs(requests, stream); }
 
   using aggregation_set =
     std::unordered_set<std::pair<column_view, std::reference_wrapper<aggregation const>>,
@@ -74,7 +74,7 @@ auto extract_hash_groupby_aggs(std::span<aggregation_request const> requests,
   }
 
   auto [values, kinds, aggs, is_intermediate, has_compound] =
-    extract_single_pass_aggs(requests, stream, true);
+    extract_single_pass_aggs(requests, stream);
   aggregation_set extracted;
   std::vector<column_view> unique_values;
   unique_values.reserve(aggs.size());

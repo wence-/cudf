@@ -14,6 +14,10 @@
 
 namespace cudf::groupby::detail::hash {
 
+/// @brief Is the aggregation using HashCSR and hence grouped reductions, or streaming
+/// groupby that doesn't support updating "large" merged state.
+enum class aggregation_mode { GROUPED_REDUCTION, STREAMING_ATOMIC };
+
 /**
  * @brief Extract single pass aggregations from the given aggregation requests.
  *
@@ -23,12 +27,12 @@ namespace cudf::groupby::detail::hash {
  *
  * For some single-pass aggregations, we also try to reduce overhead by forcing their results
  * columns to be non-nullable. For example, a SUM aggregation needed only as the intermediate result
- * for M2 aggregation will not need to have a nullmask to avoid the extra nullmask update and null
+ * for MEAN aggregation will not need to have a nullmask to avoid the extra nullmask update and null
  * count computation overhead.
  *
  * @param requests The aggregation requests
  * @param stream The CUDA stream
- * @param stable_m2 Extract M2 and count for CSR reduction; false preserves streaming raw moments
+ * @param mode Select dependencies for grouped reductions or streaming atomic accumulators
  *
  * @return A tuple containing:
  *         - A table_view containing the input values columns for the single-pass aggregations,
@@ -45,17 +49,18 @@ std::tuple<table_view,
            bool>
 extract_single_pass_aggs(std::span<aggregation_request const> requests,
                          cuda::stream_ref stream,
-                         bool stable_m2 = false);
+                         aggregation_mode mode = aggregation_mode::GROUPED_REDUCTION);
 
 /**
  * @brief Get simple aggregations from groupby aggregation
  *
  * @param agg The groupby aggregation
  * @param values_type The data type for the aggregation
- * @param stable_m2 Whether M2 is reduced directly over CSR groups
+ * @param mode Select dependencies for grouped reductions or streaming atomic accumulators
  * @return A vector of aggregation kinds
  */
-std::vector<aggregation::Kind> get_simple_aggregations(groupby_aggregation const& agg,
-                                                       data_type values_type,
-                                                       bool stable_m2 = false);
+std::vector<aggregation::Kind> get_simple_aggregations(
+  groupby_aggregation const& agg,
+  data_type values_type,
+  aggregation_mode mode = aggregation_mode::GROUPED_REDUCTION);
 }  // namespace cudf::groupby::detail::hash
