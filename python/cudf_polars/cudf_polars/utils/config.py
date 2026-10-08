@@ -49,7 +49,7 @@ if TYPE_CHECKING:
     from rapidsmpf.streaming.core.context import Context
 
     from cudf_polars.engine.ray import RankActor
-    from cudf_polars.quent._context import QuentContext
+    from cudf_polars.quent._context import QuentContext, WorkerResources
     from cudf_polars.quent._logging import QuentLogger
 
 
@@ -603,7 +603,7 @@ class ParquetOptions:
         improved performance on large datasets with complex filters.
         Default is False.
     use_hybrid_scan
-        Whether to use the two-pass ``HybridScanReader`` for ``SplitScan``
+        Whether to use the two-pass ``HybridScanReader`` for split parquet
         tasks when a predicate can be pushed down to a parquet filter.
         Default is False.
     """
@@ -723,10 +723,10 @@ def default_broadcast_limit(min_device_size: int | None) -> int:
 @dataclasses.dataclass(frozen=True)
 class DynamicPlanningOptions:
     """
-    Configuration for dynamic shuffle planning.
+    Configuration for runtime planning decisions.
 
-    When enabled, shuffle decisions for GroupBy/Join/Unique operations
-    are made at runtime by sampling real chunks.
+    When enabled, the streaming executor may make selected planning decisions
+    at runtime using metadata or sampled chunks.
 
     To enable dynamic planning, pass a ``DynamicPlanningOptions`` instance
     to ``StreamingExecutor(dynamic_planning=...)``. To disable it, pass
@@ -740,6 +740,12 @@ class DynamicPlanningOptions:
     sample_chunk_count
         The maximum number of chunks to sample before making
         dynamic-planning decisions. Default is 2.
+    infer_ordering
+        Whether to infer scan ordering from input metadata. Parquet scans use
+        footer min/max statistics. For floating-point columns, this assumes row
+        groups containing NaN values lack usable min/max statistics. Disable
+        this to skip footer decoding and collective communication, or to isolate
+        ordering inference in tests and benchmarks. Default is True.
     """
 
     _env_prefix = "CUDF_POLARS__EXECUTOR__DYNAMIC_PLANNING"
@@ -749,12 +755,19 @@ class DynamicPlanningOptions:
             f"{_env_prefix}__SAMPLE_CHUNK_COUNT", int, default=2
         )
     )
+    infer_ordering: bool = dataclasses.field(
+        default_factory=_make_default_factory(
+            f"{_env_prefix}__INFER_ORDERING", _bool_converter, default=True
+        )
+    )
 
     def __post_init__(self) -> None:  # noqa: D105
         if not isinstance(self.sample_chunk_count, int):
             raise TypeError("sample_chunk_count must be an int")
         if self.sample_chunk_count < 1:
             raise ValueError("sample_chunk_count must be at least 1")
+        if not isinstance(self.infer_ordering, bool):
+            raise TypeError("infer_ordering must be a bool")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -970,6 +983,10 @@ class SPMDContext:
         The active RapidsMPF context.
     py_executor
         Thread-pool executor used to drive the actor network on each rank.
+    worker_resources
+        Engine/worker-scoped Quent resources (device memory, channels, thread
+        pool, processor registry, network topology). ``None`` when Quent is
+        disabled.
     """
 
     comm: Communicator
@@ -978,6 +995,7 @@ class SPMDContext:
     engine_id: uuid.UUID
     worker_id: uuid.UUID
     quent_logger: QuentLogger | None
+    worker_resources: WorkerResources | None = None
 
 
 @dataclasses.dataclass(frozen=True)
