@@ -687,15 +687,14 @@ bool is_nested(data_type type);
  */
 bool is_bit_castable(data_type from, data_type to);
 
+/**
+ * @brief Indicates whether `From` is implicitly convertible to `To`.
+ *
+ * @deprecated Use `cuda::std::is_convertible` instead.
+ */
 template <typename From, typename To>
-struct is_convertible : cuda::std::is_convertible<From, To> {};
-
-// This will ensure that timestamps can be promoted to a higher precision. Presently, they can't
-// do that due to nvcc/gcc compiler issues
-template <typename Duration1, typename Duration2>
-struct is_convertible<cudf::detail::timestamp<Duration1>, cudf::detail::timestamp<Duration2>>
-  : cuda::std::is_convertible<typename cudf::detail::time_point<Duration1>::duration,
-                              typename cudf::detail::time_point<Duration2>::duration> {};
+struct [[deprecated("Use cuda::std::is_convertible instead.")]] is_convertible
+  : cuda::std::is_convertible<From, To> {};
 
 /** @} */
 
