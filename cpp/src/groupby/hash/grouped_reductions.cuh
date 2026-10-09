@@ -103,6 +103,11 @@ CUDF_KERNEL void reduce_segments_kernel(size_type num_segments,
 {
   static_assert(threads_per_segment == cudf::detail::warp_size ||
                 threads_per_segment == reduction_block_size);
+  // A reduction operator may override the algorithm used for parallel reduction within a
+  // thread block for the BlockReduce by defining a static constexpr member
+  // `block_reduce_algorithm` selecting a valid cub::BlockReduceAlgorithm entry. For
+  // example, merge_m2 uses BLOCK_REDUCE_RAKING to reduce the amount of arithmetic at the
+  // cost of slightly higher latency for under-occupied reductions.
   constexpr auto block_algorithm = [] {
     if constexpr (requires { Op::block_reduce_algorithm; }) {
       return Op::block_reduce_algorithm;
