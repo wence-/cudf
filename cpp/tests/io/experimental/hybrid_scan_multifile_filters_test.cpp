@@ -23,6 +23,8 @@
 #include <cudf/utilities/memory_resource.hpp>
 #include <cudf/utilities/span.hpp>
 
+#include <cuda/std/type_traits>
+
 #include <algorithm>
 #include <cstdint>
 #include <iterator>
@@ -240,7 +242,7 @@ TEST_F(HybridScanMultifileFiltersTest, MismatchedNullabilityDoesNotLeakIntoMetad
 
   auto const options =
     cudf::io::parquet_reader_options::builder().allow_mismatched_pq_schemas(true).build();
-  auto const reader =
+  auto reader =
     cudf::io::parquet::experimental::hybrid_scan_multifile{inputs.footer_byte_spans, options};
 
   // `col0` is REQUIRED in the first source, and stays REQUIRED in the reported metadata even
@@ -268,7 +270,7 @@ TEST_F(HybridScanMultifileFiltersTest, MismatchedNullabilityDoesNotLeakIntoMetad
   EXPECT_EQ(col0_repetition_type(metadatas), cudf::io::parquet::FieldRepetitionType::REQUIRED);
 
   // A reader built from that metadata must produce the same (nullable)table.
-  auto const reader_from_metadata =
+  auto reader_from_metadata =
     cudf::io::parquet::experimental::hybrid_scan_multifile{std::move(metadatas), options};
   auto downstream_column_data = fetch_multisource_device_data(
     inputs, reader_from_metadata.all_column_chunks_byte_ranges(row_groups, options), stream, mr);
@@ -792,7 +794,7 @@ TYPED_TEST(HybridScanMultifilePageIndexRowMaskTest, BuildRowMaskWithPageIndexSta
     auto filter_expression =
       cudf::ast::operation(cudf::ast::ast_operator::GREATER, literal, col_ref);
     auto constexpr expected_surviving_rows =
-      num_sources * num_ordered_rows / (std::is_signed_v<T> ? 4 : 2);
+      num_sources * num_ordered_rows / (cuda::std::is_signed_v<T> ? 4 : 2);
     test_filter_data_pages_with_stats(filter_expression, expected_surviving_rows);
   }
 
@@ -804,7 +806,7 @@ TYPED_TEST(HybridScanMultifilePageIndexRowMaskTest, BuildRowMaskWithPageIndexSta
     auto filter_expression =
       cudf::ast::operation(cudf::ast::ast_operator::GREATER_EQUAL, col_ref, literal);
     auto constexpr expected_surviving_rows =
-      num_sources * num_ordered_rows / (std::is_signed_v<T> ? 4 : 2);
+      num_sources * num_ordered_rows / (cuda::std::is_signed_v<T> ? 4 : 2);
     test_filter_data_pages_with_stats(filter_expression, expected_surviving_rows);
   }
 
